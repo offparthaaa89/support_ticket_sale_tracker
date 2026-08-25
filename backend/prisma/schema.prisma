@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  runtime  = "bun"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  AGENT
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model User {
+  id           String @id @default(uuid()) @db.Uuid
+  name         String
+  email        String @unique
+  passwordHash String
+  role         Role   @default(USER)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  createdTickets  Ticket[]  @relation("TicketCreator")
+  assignedTickets Ticket[]  @relation("TicketAssignee")
+  comments        Comment[]
+
+  @@index([role])
+}
+
+model Ticket {
+  id          String         @id @default(uuid()) @db.Uuid
+  title       String
+  description String
+  priority    TicketPriority
+  status      TicketStatus   @default(OPEN)
+
+  creatorId String @db.Uuid
+  creator   User   @relation("TicketCreator", fields: [creatorId], references: [id], onDelete: Restrict)
+
+  assignedAgentId String? @db.Uuid
+  assignedAgent   User?   @relation("TicketAssignee", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+
+  firstResponseAt DateTime? @db.Timestamptz(3)
+  slaDeadline     DateTime  @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  comments Comment[]
+
+  @@index([creatorId])
+  @@index([assignedAgentId])
+  @@index([status])
+  @@index([priority])
+  @@index([createdAt])
+}
+
+model Comment {
+  id      String @id @default(uuid()) @db.Uuid
+  content String
+
+  ticketId String @db.Uuid
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  authorId String @db.Uuid
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId, createdAt])
+  @@index([authorId])
+}
