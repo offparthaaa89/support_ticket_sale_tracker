@@ -1,0 +1,137 @@
+enum Role {
+  USER
+  AGENT
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum SLAState {
+  ON_TRACK
+  AT_RISK
+  BREACHED
+}
+
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  role: Role!
+  createdAt: String!
+  updatedAt: String!
+}
+
+type Comment {
+  id: ID!
+  content: String!
+  author: User!
+  createdAt: String!
+}
+
+type Ticket {
+  id: ID!
+  title: String!
+  description: String!
+  priority: TicketPriority!
+  status: TicketStatus!
+
+  creator: User!
+  assignedAgent: User
+
+  firstResponseAt: String
+  slaDeadline: String!
+  slaState: SLAState!
+
+  createdAt: String!
+  updatedAt: String!
+
+  comments: [Comment!]!
+}
+
+type AuthPayload {
+  token: String!
+  user: User!
+}
+
+type TicketPage {
+  items: [Ticket!]!
+  page: Int!
+  limit: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+input RegisterInput {
+  name: String!
+  email: String!
+  password: String!
+}
+
+input LoginInput {
+  email: String!
+  password: String!
+}
+
+input CreateTicketInput {
+  title: String!
+  description: String!
+  priority: TicketPriority!
+}
+
+input AssignTicketInput {
+  ticketId: ID!
+  agentId: ID!
+}
+
+input UpdateTicketStatusInput {
+  ticketId: ID!
+  status: TicketStatus!
+}
+
+input AddCommentInput {
+  ticketId: ID!
+  content: String!
+}
+
+input TicketFilterInput {
+  status: TicketStatus
+  priority: TicketPriority
+  assignedAgentId: ID
+}
+
+type Query {
+  me: User!
+
+  ticket(id: ID!): Ticket!
+
+  tickets(
+    filter: TicketFilterInput
+    page: Int = 1
+    limit: Int = 10
+  ): TicketPage!
+}
+
+type Mutation {
+  register(input: RegisterInput!): AuthPayload!
+
+  login(input: LoginInput!): AuthPayload!
+
+  createTicket(input: CreateTicketInput!): Ticket!
+
+  assignTicket(input: AssignTicketInput!): Ticket!
+
+  updateTicketStatus(input: UpdateTicketStatusInput!): Ticket!
+
+  addComment(input: AddCommentInput!): Comment!
+}
