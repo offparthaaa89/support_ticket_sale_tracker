@@ -14,6 +14,8 @@ import {
     request: Request;
   }): Promise<GraphQLContext> {
     const authorization = request.headers.get("authorization");
+
+    console.log("Authorization header:", authorization);
   
     if (!authorization) {
       return {
