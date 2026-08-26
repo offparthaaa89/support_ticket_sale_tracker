@@ -111,8 +111,9 @@ input TicketFilterInput {
 }
 
 type Query {
-  me: User!
+  health: String!
 
+  me: User!
   ticket(id: ID!): Ticket!
 
   tickets(
