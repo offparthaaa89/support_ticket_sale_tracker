@@ -1,5 +1,4 @@
-import { GraphQLError } from "graphql";
-
+import { requireAuthenticatedUser } from "../../auth/authorization";
 import type { GraphQLContext } from "../../auth/context";
 import { getCurrentUser } from "../../services/auth.service";
 
@@ -12,15 +11,10 @@ export const queryResolvers = {
       _args: unknown,
       context: GraphQLContext,
     ) => {
-      if (!context.user) {
-        throw new GraphQLError("Authentication required", {
-          extensions: {
-            code: "UNAUTHENTICATED",
-          },
-        });
-      }
+      const authenticatedUser =
+        requireAuthenticatedUser(context);
 
-      return getCurrentUser(context.user.id);
+      return getCurrentUser(authenticatedUser.id);
     },
   },
 };
