@@ -21,9 +21,10 @@
     "pg": "^8.23.0"
   },
   "scripts": {
-    "dev": "bun --watch src/server.ts",
-    "start": "bun src/server.ts",
-    "typecheck": "tsc --noEmit",
-    "test:unit": "bun test tests/unit"
-  }
+  "dev": "bun --watch src/server.ts",
+  "start": "bun src/server.ts",
+  "typecheck": "tsc --noEmit",
+  "test:unit": "bun test tests/unit",
+  "test:integration": "bun test tests/integration"
+}
 }
