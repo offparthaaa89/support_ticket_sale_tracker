@@ -1,6 +1,7 @@
 import { GraphQLError } from "graphql";
 
 import type { AuthenticatedUser } from "../auth/jwt";
+
 import type {
   Comment,
   Ticket,
@@ -8,7 +9,14 @@ import type {
   TicketStatus,
   User,
 } from "../generated/prisma/client";
+
 import { prisma } from "../lib/prisma";
+
+import {
+  calculateSlaDeadline,
+  getSlaState,
+  type SlaState,
+} from "./sla.service";
 
 export interface CreateTicketInput {
   title: string;
@@ -74,6 +82,7 @@ interface TicketView {
   assignedAgent: UserView | null;
   firstResponseAt: string | null;
   slaDeadline: string;
+  slaState: SlaState;
   createdAt: string;
   updatedAt: string;
   comments: CommentView[];
@@ -81,13 +90,6 @@ interface TicketView {
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const temporarySlaHours: Record<TicketPriority, number> = {
-  URGENT: 2,
-  HIGH: 4,
-  MEDIUM: 8,
-  LOW: 16,
-};
 
 const allowedStatusTransitions: Record<
   TicketStatus,
@@ -99,7 +101,9 @@ const allowedStatusTransitions: Record<
   CLOSED: [],
 };
 
-function badUserInput(message: string): never {
+function badUserInput(
+  message: string,
+): never {
   throw new GraphQLError(message, {
     extensions: {
       code: "BAD_USER_INPUT",
@@ -107,7 +111,9 @@ function badUserInput(message: string): never {
   });
 }
 
-function validationError(message: string): never {
+function validationError(
+  message: string,
+): never {
   throw new GraphQLError(message, {
     extensions: {
       code: "VALIDATION_ERROR",
@@ -115,7 +121,9 @@ function validationError(message: string): never {
   });
 }
 
-function notFound(message: string): never {
+function notFound(
+  message: string,
+): never {
   throw new GraphQLError(message, {
     extensions: {
       code: "NOT_FOUND",
@@ -123,7 +131,9 @@ function notFound(message: string): never {
   });
 }
 
-function forbidden(message: string): never {
+function forbidden(
+  message: string,
+): never {
   throw new GraphQLError(message, {
     extensions: {
       code: "FORBIDDEN",
@@ -131,25 +141,35 @@ function forbidden(message: string): never {
   });
 }
 
-function assertUuid(value: string, fieldName: string): void {
+function assertUuid(
+  value: string,
+  fieldName: string,
+): void {
   if (!uuidPattern.test(value)) {
-    badUserInput(`${fieldName} must be a valid UUID`);
+    badUserInput(
+      `${fieldName} must be a valid UUID`,
+    );
   }
 }
 
-function toUserView(user: User): UserView {
+function toUserView(
+  user: User,
+): UserView {
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
-    createdAt: user.createdAt.toISOString(),
-    updatedAt: user.updatedAt.toISOString(),
+    createdAt:
+      user.createdAt.toISOString(),
+    updatedAt:
+      user.updatedAt.toISOString(),
   };
 }
 
 function toTicketView(
   ticket: TicketWithRelations,
+  now: Date = new Date(),
 ): TicketView {
   return {
     id: ticket.id,
@@ -157,21 +177,51 @@ function toTicketView(
     description: ticket.description,
     priority: ticket.priority,
     status: ticket.status,
-    creator: toUserView(ticket.creator),
-    assignedAgent: ticket.assignedAgent
-      ? toUserView(ticket.assignedAgent)
-      : null,
+
+    creator:
+      toUserView(ticket.creator),
+
+    assignedAgent:
+      ticket.assignedAgent
+        ? toUserView(
+            ticket.assignedAgent,
+          )
+        : null,
+
     firstResponseAt:
-      ticket.firstResponseAt?.toISOString() ?? null,
-    slaDeadline: ticket.slaDeadline.toISOString(),
-    createdAt: ticket.createdAt.toISOString(),
-    updatedAt: ticket.updatedAt.toISOString(),
-    comments: ticket.comments.map((comment) => ({
-      id: comment.id,
-      content: comment.content,
-      author: toUserView(comment.author),
-      createdAt: comment.createdAt.toISOString(),
-    })),
+      ticket.firstResponseAt?.toISOString() ??
+      null,
+
+    slaDeadline:
+      ticket.slaDeadline.toISOString(),
+
+    slaState: getSlaState(
+      ticket.slaDeadline,
+      ticket.priority,
+      now,
+    ),
+
+    createdAt:
+      ticket.createdAt.toISOString(),
+
+    updatedAt:
+      ticket.updatedAt.toISOString(),
+
+    comments:
+      ticket.comments.map(
+        (comment) => ({
+          id: comment.id,
+          content: comment.content,
+
+          author:
+            toUserView(
+              comment.author,
+            ),
+
+          createdAt:
+            comment.createdAt.toISOString(),
+        }),
+      ),
   };
 }
 
@@ -179,9 +229,14 @@ function validateCreateTicketInput(
   input: CreateTicketInput,
 ): CreateTicketInput {
   const title = input.title.trim();
-  const description = input.description.trim();
 
-  if (title.length < 3 || title.length > 120) {
+  const description =
+    input.description.trim();
+
+  if (
+    title.length < 3 ||
+    title.length > 120
+  ) {
     validationError(
       "Title must be between 3 and 120 characters",
     );
@@ -203,19 +258,6 @@ function validateCreateTicketInput(
   };
 }
 
-/**
- * Stage 11 replaces this with the business-hour-aware SLA engine.
- */
-function calculateTemporarySlaDeadline(
-  priority: TicketPriority,
-): Date {
-  const hours = temporarySlaHours[priority];
-
-  return new Date(
-    Date.now() + hours * 60 * 60 * 1000,
-  );
-}
-
 export async function createTicket(
   actor: AuthenticatedUser,
   input: CreateTicketInput,
@@ -226,33 +268,48 @@ export async function createTicket(
     );
   }
 
-  const validated = validateCreateTicketInput(input);
+  const validated =
+    validateCreateTicketInput(input);
 
-  const ticket = await prisma.ticket.create({
-    data: {
-      title: validated.title,
-      description: validated.description,
-      priority: validated.priority,
-      creatorId: actor.id,
-      slaDeadline:
-        calculateTemporarySlaDeadline(
+  const createdAt = new Date();
+
+  const slaDeadline =
+    calculateSlaDeadline(
+      createdAt,
+      validated.priority,
+    );
+
+  const ticket =
+    await prisma.ticket.create({
+      data: {
+        title: validated.title,
+        description:
+          validated.description,
+        priority:
           validated.priority,
-        ),
-    },
 
-    include: {
-      creator: true,
-      assignedAgent: true,
-      comments: {
-        include: {
-          author: true,
-        },
-        orderBy: {
-          createdAt: "asc",
+        creatorId:
+          actor.id,
+
+        createdAt,
+        slaDeadline,
+      },
+
+      include: {
+        creator: true,
+        assignedAgent: true,
+
+        comments: {
+          include: {
+            author: true,
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
         },
       },
-    },
-  });
+    });
 
   return toTicketView(ticket);
 }
@@ -261,26 +318,32 @@ export async function getTicket(
   actor: AuthenticatedUser,
   ticketId: string,
 ): Promise<TicketView> {
-  assertUuid(ticketId, "ticketId");
+  assertUuid(
+    ticketId,
+    "ticketId",
+  );
 
-  const ticket = await prisma.ticket.findUnique({
-    where: {
-      id: ticketId,
-    },
+  const ticket =
+    await prisma.ticket.findUnique({
+      where: {
+        id: ticketId,
+      },
 
-    include: {
-      creator: true,
-      assignedAgent: true,
-      comments: {
-        include: {
-          author: true,
-        },
-        orderBy: {
-          createdAt: "asc",
+      include: {
+        creator: true,
+        assignedAgent: true,
+
+        comments: {
+          include: {
+            author: true,
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
         },
       },
-    },
-  });
+    });
 
   if (!ticket) {
     notFound("Ticket not found");
@@ -302,10 +365,16 @@ export async function listTickets(
   actor: AuthenticatedUser,
   input: ListTicketsInput,
 ) {
-  const page = input.page ?? 1;
-  const limit = input.limit ?? 10;
+  const page =
+    input.page ?? 1;
 
-  if (!Number.isInteger(page) || page < 1) {
+  const limit =
+    input.limit ?? 10;
+
+  if (
+    !Number.isInteger(page) ||
+    page < 1
+  ) {
     validationError(
       "Page must be an integer greater than or equal to 1",
     );
@@ -321,12 +390,16 @@ export async function listTickets(
     );
   }
 
-  const filter = input.filter ?? undefined;
+  const filter =
+    input.filter ?? undefined;
 
   const assignedAgentId =
-    filter?.assignedAgentId ?? undefined;
+    filter?.assignedAgentId ??
+    undefined;
 
-  if (assignedAgentId !== undefined) {
+  if (
+    assignedAgentId !== undefined
+  ) {
     assertUuid(
       assignedAgentId,
       "assignedAgentId",
@@ -336,98 +409,62 @@ export async function listTickets(
   const where = {
     ...(actor.role === "USER"
       ? {
-          creatorId: actor.id,
+          creatorId:
+            actor.id,
         }
       : {}),
 
     ...(filter?.status
       ? {
-          status: filter.status,
+          status:
+            filter.status,
         }
       : {}),
 
     ...(filter?.priority
       ? {
-          priority: filter.priority,
+          priority:
+            filter.priority,
         }
       : {}),
 
-    ...(assignedAgentId !== undefined
+    ...(assignedAgentId !==
+    undefined
       ? {
           assignedAgentId,
         }
       : {}),
   };
 
-  const skip = (page - 1) * limit;
+  const skip =
+    (page - 1) * limit;
 
-  const [tickets, total] = await Promise.all([
-    prisma.ticket.findMany({
-      where,
-
-      skip,
-      take: limit,
-
-      orderBy: [
-        {
-          createdAt: "desc",
-        },
-        {
-          id: "desc",
-        },
-      ],
-
-      include: {
-        creator: true,
-        assignedAgent: true,
-        comments: {
-          include: {
-            author: true,
-          },
-          orderBy: {
-            createdAt: "asc",
-          },
-        },
-      },
-    }),
-
-    prisma.ticket.count({
-      where,
-    }),
-  ]);
-
-  return {
-    items: tickets.map(toTicketView),
-    page,
-    limit,
-    total,
-    totalPages:
-      total === 0
-        ? 0
-        : Math.ceil(total / limit),
-  };
-}
-
-export async function assignTicket(
-  input: AssignTicketInput,
-): Promise<TicketView> {
-  assertUuid(input.ticketId, "ticketId");
-  assertUuid(input.agentId, "agentId");
-
-  const [ticket, targetAgent] =
+  const [tickets, total] =
     await Promise.all([
-      prisma.ticket.findUnique({
-        where: {
-          id: input.ticketId,
-        },
+      prisma.ticket.findMany({
+        where,
+
+        skip,
+        take: limit,
+
+        orderBy: [
+          {
+            createdAt: "desc",
+          },
+          {
+            id: "desc",
+          },
+        ],
 
         include: {
           creator: true,
           assignedAgent: true,
+
           comments: {
             include: {
               author: true,
             },
+
             orderBy: {
               createdAt: "asc",
             },
@@ -435,29 +472,101 @@ export async function assignTicket(
         },
       }),
 
-      prisma.user.findUnique({
-        where: {
-          id: input.agentId,
-        },
+      prisma.ticket.count({
+        where,
       }),
     ]);
+
+  const now = new Date();
+
+  return {
+    items: tickets.map(
+      (ticket) =>
+        toTicketView(
+          ticket,
+          now,
+        ),
+    ),
+
+    page,
+    limit,
+    total,
+
+    totalPages:
+      total === 0
+        ? 0
+        : Math.ceil(
+            total / limit,
+          ),
+  };
+}
+
+export async function assignTicket(
+  input: AssignTicketInput,
+): Promise<TicketView> {
+  assertUuid(
+    input.ticketId,
+    "ticketId",
+  );
+
+  assertUuid(
+    input.agentId,
+    "agentId",
+  );
+
+  const [
+    ticket,
+    targetAgent,
+  ] = await Promise.all([
+    prisma.ticket.findUnique({
+      where: {
+        id: input.ticketId,
+      },
+
+      include: {
+        creator: true,
+        assignedAgent: true,
+
+        comments: {
+          include: {
+            author: true,
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
+      },
+    }),
+
+    prisma.user.findUnique({
+      where: {
+        id: input.agentId,
+      },
+    }),
+  ]);
 
   if (!ticket) {
     notFound("Ticket not found");
   }
 
   if (!targetAgent) {
-    notFound("Selected user not found");
+    notFound(
+      "Selected user not found",
+    );
   }
 
-  if (targetAgent.role !== "AGENT") {
+  if (
+    targetAgent.role !== "AGENT"
+  ) {
     badUserInput(
       "Selected user is not a support agent",
     );
   }
 
   if (
-    ticket.assignedAgentId === targetAgent.id
+    ticket.assignedAgentId ===
+    targetAgent.id
   ) {
     return toTicketView(ticket);
   }
@@ -469,16 +578,19 @@ export async function assignTicket(
       },
 
       data: {
-        assignedAgentId: targetAgent.id,
+        assignedAgentId:
+          targetAgent.id,
       },
 
       include: {
         creator: true,
         assignedAgent: true,
+
         comments: {
           include: {
             author: true,
           },
+
           orderBy: {
             createdAt: "asc",
           },
@@ -486,48 +598,62 @@ export async function assignTicket(
       },
     });
 
-  return toTicketView(updatedTicket);
+  return toTicketView(
+    updatedTicket,
+  );
 }
 
 export async function updateTicketStatus(
   input: UpdateTicketStatusInput,
 ): Promise<TicketView> {
-  assertUuid(input.ticketId, "ticketId");
+  assertUuid(
+    input.ticketId,
+    "ticketId",
+  );
 
-  const ticket = await prisma.ticket.findUnique({
-    where: {
-      id: input.ticketId,
-    },
+  const ticket =
+    await prisma.ticket.findUnique({
+      where: {
+        id: input.ticketId,
+      },
 
-    include: {
-      creator: true,
-      assignedAgent: true,
-      comments: {
-        include: {
-          author: true,
-        },
-        orderBy: {
-          createdAt: "asc",
+      include: {
+        creator: true,
+        assignedAgent: true,
+
+        comments: {
+          include: {
+            author: true,
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
         },
       },
-    },
-  });
+    });
 
   if (!ticket) {
     notFound("Ticket not found");
   }
 
-  if (ticket.status === input.status) {
+  if (
+    ticket.status === input.status
+  ) {
     validationError(
       `Ticket is already ${input.status}`,
     );
   }
 
   const allowedNextStatuses =
-    allowedStatusTransitions[ticket.status];
+    allowedStatusTransitions[
+      ticket.status
+    ];
 
   if (
-    !allowedNextStatuses.includes(input.status)
+    !allowedNextStatuses.includes(
+      input.status,
+    )
   ) {
     validationError(
       `Invalid status transition from ${ticket.status} to ${input.status}`,
@@ -547,10 +673,12 @@ export async function updateTicketStatus(
       include: {
         creator: true,
         assignedAgent: true,
+
         comments: {
           include: {
             author: true,
           },
+
           orderBy: {
             createdAt: "asc",
           },
@@ -558,5 +686,7 @@ export async function updateTicketStatus(
       },
     });
 
-  return toTicketView(updatedTicket);
+  return toTicketView(
+    updatedTicket,
+  );
 }
