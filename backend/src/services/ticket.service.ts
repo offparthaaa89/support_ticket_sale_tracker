@@ -1,3 +1,7 @@
+import {
+    canTransitionTicketStatus,
+  } from "./ticket-rules";
+
 import { GraphQLError } from "graphql";
 
 import type { AuthenticatedUser } from "../auth/jwt";
@@ -90,16 +94,6 @@ interface TicketView {
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const allowedStatusTransitions: Record<
-  TicketStatus,
-  readonly TicketStatus[]
-> = {
-  OPEN: ["IN_PROGRESS"],
-  IN_PROGRESS: ["RESOLVED"],
-  RESOLVED: ["CLOSED"],
-  CLOSED: [],
-};
 
 function badUserInput(
   message: string,
@@ -645,13 +639,9 @@ export async function updateTicketStatus(
     );
   }
 
-  const allowedNextStatuses =
-    allowedStatusTransitions[
-      ticket.status
-    ];
-
   if (
-    !allowedNextStatuses.includes(
+    !canTransitionTicketStatus(
+      ticket.status,
       input.status,
     )
   ) {
