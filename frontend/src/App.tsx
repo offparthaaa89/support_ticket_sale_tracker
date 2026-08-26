@@ -5,189 +5,256 @@ import {
 } from "react";
 
 import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+} from "react-router-dom";
+
+import {
   graphqlRequest,
 } from "./api/graphql";
 
-interface HealthQueryData {
-  health: string;
+import {
+  ME_QUERY,
+} from "./api/operations";
+
+import AppShell from "./components/AppShell";
+
+import CreateTicketPage from "./pages/CreateTicketPage";
+import DashboardPage from "./pages/DashboardPage";
+import LoginPage from "./pages/LoginPage";
+import TicketDetailsPage from "./pages/TicketDetailsPage";
+
+import type {
+  AppUser,
+} from "./types";
+
+interface MeResponse {
+  me: AppUser;
 }
 
-type ConnectionState =
-  | "checking"
-  | "connected"
-  | "error";
-
-const HEALTH_QUERY = `
-  query Health {
-    health
-  }
-`;
+const TOKEN_STORAGE_KEY =
+  "supportflow_access_token";
 
 export default function App() {
   const [
-    connectionState,
-    setConnectionState,
-  ] = useState<ConnectionState>(
-    "checking",
+    accessToken,
+    setAccessToken,
+  ] = useState<string | null>(
+    () =>
+      sessionStorage.getItem(
+        TOKEN_STORAGE_KEY,
+      ),
   );
 
-  const [
-    errorMessage,
-    setErrorMessage,
-  ] = useState<string | null>(null);
+  const [user, setUser] =
+    useState<AppUser | null>(
+      null,
+    );
 
-  const checkConnection =
-    useCallback(async () => {
-      setConnectionState("checking");
-      setErrorMessage(null);
+  const [
+    checkingSession,
+    setCheckingSession,
+  ] = useState(
+    Boolean(accessToken),
+  );
+
+  const handleLogout =
+    useCallback(() => {
+      sessionStorage.removeItem(
+        TOKEN_STORAGE_KEY,
+      );
+
+      setAccessToken(null);
+      setUser(null);
+      setCheckingSession(false);
+    }, []);
+
+  useEffect(() => {
+    if (!accessToken) {
+      setCheckingSession(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function restoreSession() {
+      setCheckingSession(true);
 
       try {
         const data =
           await graphqlRequest<
-            HealthQueryData
-          >(HEALTH_QUERY);
-
-        if (data.health !== "OK") {
-          throw new Error(
-            "Unexpected health response",
+            MeResponse
+          >(
+            ME_QUERY,
+            undefined,
+            accessToken ??
+              undefined,
           );
+
+        if (!cancelled) {
+          setUser(data.me);
         }
+      } catch {
+        if (!cancelled) {
+          sessionStorage.removeItem(
+            TOKEN_STORAGE_KEY,
+          );
 
-        setConnectionState(
-          "connected",
-        );
-      } catch (error: unknown) {
-        setConnectionState("error");
-
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : "Unable to connect to the API",
-        );
+          setAccessToken(null);
+          setUser(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setCheckingSession(false);
+        }
       }
-    }, []);
+    }
 
-  useEffect(() => {
-    void checkConnection();
-  }, [checkConnection]);
+    void restoreSession();
 
-  const isChecking =
-    connectionState === "checking";
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken]);
 
-  return (
-    <main className="app-shell">
-      <section className="setup-card">
-        <div className="brand-mark">
+  function handleAuthenticated(
+    token: string,
+    authenticatedUser: AppUser,
+  ) {
+    sessionStorage.setItem(
+      TOKEN_STORAGE_KEY,
+      token,
+    );
+
+    setAccessToken(token);
+    setUser(authenticatedUser);
+  }
+
+  if (checkingSession) {
+    return (
+      <div className="session-loading">
+        <div className="brand-loader">
           S
         </div>
 
-        <p className="eyebrow">
-          Support Ticket & SLA Tracker
-        </p>
+        <strong>
+          Preparing your workspace
+        </strong>
 
-        <h1>
-          Support operations,
-          without the noise.
-        </h1>
+        <span>
+          Checking your session…
+        </span>
+      </div>
+    );
+  }
 
-        <p className="hero-description">
-          A focused workspace for
-          customers and support agents
-          to create, track and resolve
-          issues efficiently.
-        </p>
+  const authenticated =
+    Boolean(accessToken && user);
 
-        <div
-          className={`connection-card connection-card--${connectionState}`}
-        >
-          <div
-            className="connection-status"
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route
+          path="/login"
+          element={
+            authenticated ? (
+              <Navigate
+                to="/tickets"
+                replace
+              />
+            ) : (
+              <LoginPage
+                onAuthenticated={
+                  handleAuthenticated
+                }
+              />
+            )
+          }
+        />
+
+        {authenticated &&
+        accessToken &&
+        user ? (
+          <Route
+            element={
+              <AppShell
+                user={user}
+                onLogout={
+                  handleLogout
+                }
+              />
+            }
           >
-            <span
-              className="status-dot"
-              aria-hidden="true"
+            <Route
+              path="/tickets"
+              element={
+                <DashboardPage
+                  accessToken={
+                    accessToken
+                  }
+                  user={user}
+                  onSessionExpired={
+                    handleLogout
+                  }
+                />
+              }
             />
 
-            <div>
-              <strong>
-                {connectionState ===
-                "connected"
-                  ? "API connected"
-                  : connectionState ===
-                      "checking"
-                    ? "Checking API"
-                    : "API unavailable"}
-              </strong>
+            <Route
+              path="/tickets/new"
+              element={
+                user.role ===
+                "USER" ? (
+                  <CreateTicketPage
+                    accessToken={
+                      accessToken
+                    }
+                    onSessionExpired={
+                      handleLogout
+                    }
+                  />
+                ) : (
+                  <Navigate
+                    to="/tickets"
+                    replace
+                  />
+                )
+              }
+            />
 
-              <p>
-                {connectionState ===
-                "connected"
-                  ? "React is successfully communicating with GraphQL Yoga."
-                  : connectionState ===
-                      "checking"
-                    ? "Connecting to the backend…"
-                    : errorMessage ??
-                      "Could not reach the backend."}
-              </p>
-            </div>
-          </div>
+            <Route
+              path="/tickets/:ticketId"
+              element={
+                <TicketDetailsPage
+                  accessToken={
+                    accessToken
+                  }
+                  user={user}
+                  onSessionExpired={
+                    handleLogout
+                  }
+                />
+              }
+            />
+          </Route>
+        ) : null}
 
-          {connectionState ===
-            "error" && (
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                void checkConnection();
-              }}
-            >
-              Try again
-            </button>
-          )}
-        </div>
-
-        <div className="foundation-grid">
-          <article>
-            <span>01</span>
-            <strong>
-              Clear
-            </strong>
-            <p>
-              Important information gets
-              visual priority.
-            </p>
-          </article>
-
-          <article>
-            <span>02</span>
-            <strong>
-              Calm
-            </strong>
-            <p>
-              Status colors communicate
-              meaning without visual
-              overload.
-            </p>
-          </article>
-
-          <article>
-            <span>03</span>
-            <strong>
-              Responsive
-            </strong>
-            <p>
-              Every action provides
-              immediate visual feedback.
-            </p>
-          </article>
-        </div>
-
-        <p className="setup-note">
-          {isChecking
-            ? "Preparing your workspace…"
-            : "Frontend foundation ready."}
-        </p>
-      </section>
-    </main>
+        <Route
+          path="*"
+          element={
+            <Navigate
+              to={
+                authenticated
+                  ? "/tickets"
+                  : "/login"
+              }
+              replace
+            />
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   );
 }
