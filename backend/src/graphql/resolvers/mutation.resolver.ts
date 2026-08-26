@@ -15,6 +15,11 @@ import {
   } from "../../services/auth.service";
   
   import {
+    addComment,
+    type AddCommentInput,
+  } from "../../services/comment.service";
+  
+  import {
     assignTicket,
     createTicket,
     updateTicketStatus,
@@ -43,17 +48,23 @@ import {
     input: UpdateTicketStatusInput;
   }
   
+  interface AddCommentArgs {
+    input: AddCommentInput;
+  }
+  
   export const mutationResolvers = {
     Mutation: {
       register: (
         _parent: unknown,
         args: RegisterArgs,
-      ) => registerUser(args.input),
+      ) =>
+        registerUser(args.input),
   
       login: (
         _parent: unknown,
         args: LoginArgs,
-      ) => loginUser(args.input),
+      ) =>
+        loginUser(args.input),
   
       createTicket: (
         _parent: unknown,
@@ -61,7 +72,9 @@ import {
         context: GraphQLContext,
       ) => {
         const authenticatedUser =
-          requireAuthenticatedUser(context);
+          requireAuthenticatedUser(
+            context,
+          );
   
         return createTicket(
           authenticatedUser,
@@ -76,7 +89,9 @@ import {
       ) => {
         requireAgent(context);
   
-        return assignTicket(args.input);
+        return assignTicket(
+          args.input,
+        );
       },
   
       updateTicketStatus: (
@@ -87,6 +102,22 @@ import {
         requireAgent(context);
   
         return updateTicketStatus(
+          args.input,
+        );
+      },
+  
+      addComment: (
+        _parent: unknown,
+        args: AddCommentArgs,
+        context: GraphQLContext,
+      ) => {
+        const authenticatedUser =
+          requireAuthenticatedUser(
+            context,
+          );
+  
+        return addComment(
+          authenticatedUser,
           args.input,
         );
       },
