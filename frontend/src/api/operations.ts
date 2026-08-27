@@ -30,7 +30,7 @@ export const TICKETS_QUERY = `
     $page: Int!
     $limit: Int!
   ) {
-    tickets(
+    tickets: ticketPage(
       filter: $filter
       page: $page
       limit: $limit
