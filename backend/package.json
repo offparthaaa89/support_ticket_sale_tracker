@@ -7,6 +7,7 @@
     "@types/bun": "latest",
     "@types/luxon": "^3.7.5",
     "@types/pg": "^8.23.1",
+    "oxlint": "^1.79.0",
     "prisma": "7"
   },
   "peerDependencies": {
@@ -26,6 +27,7 @@
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint . --deny-warnings",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration"
   }
