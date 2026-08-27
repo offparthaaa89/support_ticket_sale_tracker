@@ -18,7 +18,9 @@ import {
   
   import {
     ADD_COMMENT_MUTATION,
+    AGENTS_QUERY,
     ASSIGN_TICKET_MUTATION,
+    RESOLVE_TICKET_MUTATION,
     TICKET_QUERY,
     UPDATE_TICKET_STATUS_MUTATION,
   } from "../api/operations";
@@ -48,6 +50,10 @@ import {
     id: string;
   }
   
+  interface AgentsResponse {
+    users: AppUser[];
+  }
+  
   interface CommentVariables {
     input: {
       ticketId: string;
@@ -69,6 +75,10 @@ import {
     };
   }
   
+  interface ResolveVariables {
+    ticketId: string;
+  }
+  
   interface MutationIdResponse {
     addComment?: {
       id: string;
@@ -79,6 +89,10 @@ import {
     };
   
     updateTicketStatus?: {
+      id: string;
+    };
+  
+    resolveTicket?: {
       id: string;
     };
   }
@@ -105,10 +119,7 @@ import {
         };
   
       case "IN_PROGRESS":
-        return {
-          status: "RESOLVED",
-          label: "Mark resolved",
-        };
+        return null;
   
       case "RESOLVED":
         return {
@@ -119,6 +130,30 @@ import {
       case "CLOSED":
         return null;
     }
+  }
+  
+  function formatRemainingMinutes(
+    minutes: number,
+  ): string {
+    if (minutes <= 0) {
+      return "No active time remaining";
+    }
+  
+    const hours =
+      Math.floor(minutes / 60);
+  
+    const remainingMinutes =
+      minutes % 60;
+  
+    if (hours === 0) {
+      return `${remainingMinutes}m remaining`;
+    }
+  
+    if (remainingMinutes === 0) {
+      return `${hours}h remaining`;
+    }
+  
+    return `${hours}h ${remainingMinutes}m remaining`;
   }
   
   export default function TicketDetailsPage({
@@ -138,6 +173,14 @@ import {
       useState<TicketDetails | null>(
         null,
       );
+  
+    const [agents, setAgents] =
+      useState<AppUser[]>([]);
+  
+    const [
+      selectedAgentId,
+      setSelectedAgentId,
+    ] = useState("");
   
     const [comment, setComment] =
       useState("");
@@ -212,7 +255,15 @@ import {
             );
   
           setTicket(response.ticket);
-        } catch (caughtError: unknown) {
+  
+          setSelectedAgentId(
+            response.ticket
+              .assignedAgent?.id ??
+              "",
+          );
+        } catch (
+          caughtError: unknown
+        ) {
           handleApiError(
             caughtError,
           );
@@ -225,9 +276,44 @@ import {
         ticketId,
       ]);
   
+    const loadAgents =
+      useCallback(async () => {
+        if (user.role !== "AGENT") {
+          setAgents([]);
+          return;
+        }
+  
+        try {
+          const response =
+            await graphqlRequest<
+              AgentsResponse
+            >(
+              AGENTS_QUERY,
+              undefined,
+              accessToken,
+            );
+  
+          setAgents(response.users);
+        } catch (
+          caughtError: unknown
+        ) {
+          handleApiError(
+            caughtError,
+          );
+        }
+      }, [
+        accessToken,
+        handleApiError,
+        user.role,
+      ]);
+  
     useEffect(() => {
       void loadTicket();
     }, [loadTicket]);
+  
+    useEffect(() => {
+      void loadAgents();
+    }, [loadAgents]);
   
     async function handleCommentSubmit(
       event: FormEvent<HTMLFormElement>,
@@ -267,7 +353,53 @@ import {
         );
   
         await loadTicket();
-      } catch (caughtError: unknown) {
+      } catch (
+        caughtError: unknown
+      ) {
+        handleApiError(
+          caughtError,
+        );
+      } finally {
+        setActionPending(false);
+      }
+    }
+  
+    async function handleAssignAgent() {
+      if (
+        !ticketId ||
+        !selectedAgentId
+      ) {
+        return;
+      }
+  
+      setActionPending(true);
+      setError(null);
+      setActionMessage(null);
+  
+      try {
+        await graphqlRequest<
+          MutationIdResponse,
+          AssignVariables
+        >(
+          ASSIGN_TICKET_MUTATION,
+          {
+            input: {
+              ticketId,
+              agentId:
+                selectedAgentId,
+            },
+          },
+          accessToken,
+        );
+  
+        setActionMessage(
+          "Ticket assignment updated.",
+        );
+  
+        await loadTicket();
+      } catch (
+        caughtError: unknown
+      ) {
         handleApiError(
           caughtError,
         );
@@ -277,6 +409,8 @@ import {
     }
   
     async function handleAssignToMe() {
+      setSelectedAgentId(user.id);
+  
       if (!ticketId) {
         return;
       }
@@ -305,7 +439,9 @@ import {
         );
   
         await loadTicket();
-      } catch (caughtError: unknown) {
+      } catch (
+        caughtError: unknown
+      ) {
         handleApiError(
           caughtError,
         );
@@ -345,7 +481,46 @@ import {
         );
   
         await loadTicket();
-      } catch (caughtError: unknown) {
+      } catch (
+        caughtError: unknown
+      ) {
+        handleApiError(
+          caughtError,
+        );
+      } finally {
+        setActionPending(false);
+      }
+    }
+  
+    async function handleResolveTicket() {
+      if (!ticketId) {
+        return;
+      }
+  
+      setActionPending(true);
+      setError(null);
+      setActionMessage(null);
+  
+      try {
+        await graphqlRequest<
+          MutationIdResponse,
+          ResolveVariables
+        >(
+          RESOLVE_TICKET_MUTATION,
+          {
+            ticketId,
+          },
+          accessToken,
+        );
+  
+        setActionMessage(
+          "Ticket resolved. Resolution SLA is now frozen.",
+        );
+  
+        await loadTicket();
+      } catch (
+        caughtError: unknown
+      ) {
         handleApiError(
           caughtError,
         );
@@ -399,6 +574,10 @@ import {
       ticket.assignedAgent?.id ===
       user.id;
   
+    const selectedAgentIsCurrent =
+      selectedAgentId ===
+      ticket.assignedAgent?.id;
+  
     return (
       <section className="page-section">
         <Link
@@ -443,7 +622,8 @@ import {
   
               <SlaBadge
                 state={
-                  ticket.slaState
+                  ticket.sla
+                    .overallState
                 }
               />
             </div>
@@ -673,26 +853,54 @@ import {
               <div className="sla-highlight">
                 <SlaBadge
                   state={
-                    ticket.slaState
+                    ticket.sla
+                      .firstResponseState
                   }
                 />
   
                 <strong>
-                  {formatDateTime(
-                    ticket.slaDeadline,
+                  {formatRemainingMinutes(
+                    ticket.sla
+                      .firstResponseRemainingMinutes,
                   )}
                 </strong>
   
                 <span>
-                  Response deadline
+                  First response due{" "}
+                  {formatDateTime(
+                    ticket.sla
+                      .firstResponseDueAt,
+                  )}
+                </span>
+              </div>
+  
+              <div className="sla-highlight">
+                <SlaBadge
+                  state={
+                    ticket.sla
+                      .resolutionState
+                  }
+                />
+  
+                <strong>
+                  {formatRemainingMinutes(
+                    ticket.sla
+                      .resolutionRemainingMinutes,
+                  )}
+                </strong>
+  
+                <span>
+                  Resolution due{" "}
+                  {formatDateTime(
+                    ticket.sla
+                      .resolutionDueAt,
+                  )}
                 </span>
               </div>
   
               <dl className="detail-list">
                 <div>
-                  <dt>
-                    Status
-                  </dt>
+                  <dt>Status</dt>
   
                   <dd>
                     <StatusBadge
@@ -704,9 +912,7 @@ import {
                 </div>
   
                 <div>
-                  <dt>
-                    Priority
-                  </dt>
+                  <dt>Priority</dt>
   
                   <dd>
                     <PriorityBadge
@@ -741,6 +947,16 @@ import {
                     )}
                   </dd>
                 </div>
+  
+                <div>
+                  <dt>Resolved</dt>
+  
+                  <dd>
+                    {formatDateTime(
+                      ticket.resolvedAt,
+                    )}
+                  </dd>
+                </div>
               </dl>
             </div>
   
@@ -755,10 +971,60 @@ import {
                 </h2>
   
                 <p>
-                  Take ownership or
+                  Assign ownership and
                   progress the ticket
                   through its lifecycle.
                 </p>
+  
+                <label className="field">
+                  <span>
+                    Assign agent
+                  </span>
+  
+                  <select
+                    value={
+                      selectedAgentId
+                    }
+                    onChange={(
+                      event,
+                    ) => {
+                      setSelectedAgentId(
+                        event.target
+                          .value,
+                      );
+                    }}
+                  >
+                    <option value="">
+                      Select an agent
+                    </option>
+  
+                    {agents.map(
+                      (agent) => (
+                        <option
+                          key={agent.id}
+                          value={agent.id}
+                        >
+                          {agent.name}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+  
+                <button
+                  type="button"
+                  className="secondary-button secondary-button--full"
+                  onClick={() => {
+                    void handleAssignAgent();
+                  }}
+                  disabled={
+                    actionPending ||
+                    !selectedAgentId ||
+                    selectedAgentIsCurrent
+                  }
+                >
+                  Update assignment
+                </button>
   
                 {!isAssignedToCurrentAgent && (
                   <button
@@ -771,9 +1037,7 @@ import {
                       actionPending
                     }
                   >
-                    {ticket.assignedAgent
-                      ? "Take over ticket"
-                      : "Assign to me"}
+                    Assign to me
                   </button>
                 )}
   
@@ -783,7 +1047,21 @@ import {
                   </div>
                 )}
   
-                {nextStatusAction ? (
+                {ticket.status ===
+                "IN_PROGRESS" ? (
+                  <button
+                    type="button"
+                    className="primary-button primary-button--full"
+                    onClick={() => {
+                      void handleResolveTicket();
+                    }}
+                    disabled={
+                      actionPending
+                    }
+                  >
+                    Resolve ticket
+                  </button>
+                ) : nextStatusAction ? (
                   <button
                     type="button"
                     className="primary-button primary-button--full"

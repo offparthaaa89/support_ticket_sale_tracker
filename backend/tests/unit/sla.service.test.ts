@@ -6,6 +6,7 @@ import {
   
   import {
     calculateTicketSLADueTimes,
+    getOverallSLAState,
     getTicketSLAInfo,
   } from "../../src/services/sla.service";
   
@@ -529,3 +530,34 @@ import {
       );
     },
   );
+
+describe(
+  "overall SLA state",
+  () => {
+    test(
+      "uses the most severe SLA state",
+      () => {
+        expect(
+          getOverallSLAState(
+            "ON_TRACK",
+            "AT_RISK",
+          ),
+        ).toBe("AT_RISK");
+
+        expect(
+          getOverallSLAState(
+            "BREACHED",
+            "ON_TRACK",
+          ),
+        ).toBe("BREACHED");
+
+        expect(
+          getOverallSLAState(
+            "ON_TRACK",
+            "ON_TRACK",
+          ),
+        ).toBe("ON_TRACK");
+      },
+    );
+  },
+);

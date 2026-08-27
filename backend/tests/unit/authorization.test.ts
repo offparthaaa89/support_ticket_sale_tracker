@@ -40,11 +40,45 @@ import {
     };
   }
   
+  function expectGraphQLErrorCode(
+    callback: () => unknown,
+    expectedCode: string,
+  ): void {
+    try {
+      callback();
+  
+      throw new Error(
+        "Expected GraphQL error",
+      );
+    } catch (error: unknown) {
+      expect(
+        error,
+      ).toBeInstanceOf(
+        GraphQLError,
+      );
+  
+      if (
+        !(
+          error instanceof
+          GraphQLError
+        )
+      ) {
+        throw error;
+      }
+  
+      expect(
+        error.extensions.code,
+      ).toBe(
+        expectedCode,
+      );
+    }
+  }
+  
   describe(
     "requireAuthenticatedUser",
     () => {
       test(
-        "returns an authenticated user",
+        "returns an authenticated USER",
         () => {
           const context =
             createContext("USER");
@@ -65,43 +99,39 @@ import {
       );
   
       test(
+        "returns an authenticated AGENT",
+        () => {
+          const context =
+            createContext("AGENT");
+  
+          const user =
+            requireAuthenticatedUser(
+              context,
+            );
+  
+          expect(user.id).toBe(
+            "agent-id",
+          );
+  
+          expect(user.role).toBe(
+            "AGENT",
+          );
+        },
+      );
+  
+      test(
         "throws UNAUTHENTICATED when no user exists",
         () => {
           const context =
             createContext(null);
   
-          try {
-            requireAuthenticatedUser(
-              context,
-            );
-  
-            throw new Error(
-              "Expected authentication to fail",
-            );
-          } catch (
-            error: unknown
-          ) {
-            expect(
-              error,
-            ).toBeInstanceOf(
-              GraphQLError,
-            );
-  
-            if (
-              !(
-                error instanceof
-                GraphQLError
-              )
-            ) {
-              throw error;
-            }
-  
-            expect(
-              error.extensions.code,
-            ).toBe(
-              "UNAUTHENTICATED",
-            );
-          }
+          expectGraphQLErrorCode(
+            () =>
+              requireAuthenticatedUser(
+                context,
+              ),
+            "UNAUTHENTICATED",
+          );
         },
       );
     },
@@ -119,6 +149,10 @@ import {
           const agent =
             requireAgent(context);
   
+          expect(agent.id).toBe(
+            "agent-id",
+          );
+  
           expect(agent.role).toBe(
             "AGENT",
           );
@@ -131,36 +165,25 @@ import {
           const context =
             createContext("USER");
   
-          try {
-            requireAgent(context);
+          expectGraphQLErrorCode(
+            () =>
+              requireAgent(context),
+            "FORBIDDEN",
+          );
+        },
+      );
   
-            throw new Error(
-              "Expected authorization to fail",
-            );
-          } catch (
-            error: unknown
-          ) {
-            expect(
-              error,
-            ).toBeInstanceOf(
-              GraphQLError,
-            );
+      test(
+        "throws UNAUTHENTICATED when no user exists",
+        () => {
+          const context =
+            createContext(null);
   
-            if (
-              !(
-                error instanceof
-                GraphQLError
-              )
-            ) {
-              throw error;
-            }
-  
-            expect(
-              error.extensions.code,
-            ).toBe(
-              "FORBIDDEN",
-            );
-          }
+          expectGraphQLErrorCode(
+            () =>
+              requireAgent(context),
+            "UNAUTHENTICATED",
+          );
         },
       );
     },

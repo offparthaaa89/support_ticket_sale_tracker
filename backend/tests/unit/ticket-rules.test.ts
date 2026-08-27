@@ -48,12 +48,48 @@ import {
       );
   
       test(
+        "rejects OPEN directly to RESOLVED",
+        () => {
+          expect(
+            canTransitionTicketStatus(
+              "OPEN",
+              "RESOLVED",
+            ),
+          ).toBe(false);
+        },
+      );
+  
+      test(
         "rejects OPEN directly to CLOSED",
         () => {
           expect(
             canTransitionTicketStatus(
               "OPEN",
               "CLOSED",
+            ),
+          ).toBe(false);
+        },
+      );
+  
+      test(
+        "rejects IN_PROGRESS directly to CLOSED",
+        () => {
+          expect(
+            canTransitionTicketStatus(
+              "IN_PROGRESS",
+              "CLOSED",
+            ),
+          ).toBe(false);
+        },
+      );
+  
+      test(
+        "rejects RESOLVED back to IN_PROGRESS",
+        () => {
+          expect(
+            canTransitionTicketStatus(
+              "RESOLVED",
+              "IN_PROGRESS",
             ),
           ).toBe(false);
         },

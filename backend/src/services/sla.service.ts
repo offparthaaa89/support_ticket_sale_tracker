@@ -12,20 +12,22 @@ export type SLAState =
   | "AT_RISK"
   | "BREACHED";
 
+  const SLA_STATE_SEVERITY: Record<SLAState, number> = {
+  ON_TRACK: 0,
+  AT_RISK: 1,
+  BREACHED: 2,
+};
+
 export interface TicketSLAInfo {
   firstResponseDueAt: Date;
   resolutionDueAt: Date;
 
   firstResponseState: SLAState;
   resolutionState: SLAState;
+  overallState: SLAState;
 
   firstResponseRemainingMinutes: number;
   resolutionRemainingMinutes: number;
-}
-
-interface SLAPolicy {
-  firstResponseMinutes: number;
-  resolutionMinutes: number;
 }
 
 interface TicketSLAInput {
@@ -39,6 +41,11 @@ interface TicketSLAInput {
   now?: Date;
   timeZone?: string;
 }
+
+interface SLAPolicy {
+    firstResponseMinutes: number;
+    resolutionMinutes: number;
+  }
 
 const SLA_POLICIES: Record<TicketPriority, SLAPolicy> = {
   URGENT: {
@@ -495,12 +502,19 @@ export function getTicketSLAInfo(
       timeZone,
     );
 
+  const overallState =
+    getOverallSLAState(
+      firstResponseState,
+      resolutionState,
+    );
+
   return {
     firstResponseDueAt,
     resolutionDueAt,
 
     firstResponseState,
     resolutionState,
+    overallState,
 
     firstResponseRemainingMinutes:
       calculateRemainingMinutes(
@@ -520,6 +534,16 @@ export function getTicketSLAInfo(
         timeZone,
       ),
   };
+}
+
+export function getOverallSLAState(
+  firstResponseState: SLAState,
+  resolutionState: SLAState,
+): SLAState {
+  return SLA_STATE_SEVERITY[firstResponseState] >=
+    SLA_STATE_SEVERITY[resolutionState]
+    ? firstResponseState
+    : resolutionState;
 }
 
 /*

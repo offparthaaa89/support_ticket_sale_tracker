@@ -46,12 +46,19 @@ export interface TicketFilterInput {
   status?: TicketStatus | null;
   priority?: TicketPriority | null;
   assignedAgentId?: string | null;
+  slaState?: SLAState | null;
 }
 
 export interface ListTicketsInput {
   filter?: TicketFilterInput | null;
   page?: number | null;
   limit?: number | null;
+}
+
+export interface ListTicketsCursorInput {
+  filter?: TicketFilterInput | null;
+  take?: number | null;
+  cursor?: string | null;
 }
 
 type CommentWithAuthor = Comment & {
@@ -85,11 +92,12 @@ interface TicketSLAView {
   resolutionDueAt: string;
   firstResponseState: SLAState;
   resolutionState: SLAState;
+  overallState: SLAState;
   firstResponseRemainingMinutes: number;
   resolutionRemainingMinutes: number;
 }
 
-interface TicketView {
+export interface TicketView {
   id: string;
   title: string;
   description: string;
@@ -241,6 +249,9 @@ function toTicketView(
       resolutionState:
         sla.resolutionState,
 
+      overallState:
+        sla.overallState,
+
       firstResponseRemainingMinutes:
         sla.firstResponseRemainingMinutes,
 
@@ -256,7 +267,7 @@ function toTicketView(
         .toISOString(),
 
     slaState:
-      sla.resolutionState,
+      sla.overallState,
 
     createdAt:
       ticket.createdAt.toISOString(),
@@ -440,7 +451,7 @@ export async function getTicket(
   );
 }
 
-export async function listTickets(
+export async function listTicketPage(
   actor: AuthenticatedUser,
   input: ListTicketsInput,
 ) {
@@ -800,4 +811,232 @@ export async function resolveTicket(
     ticketId,
     status: "RESOLVED",
   });
+}
+
+export async function listTicketsCursor(
+  actor: AuthenticatedUser,
+  input: ListTicketsCursorInput,
+) {
+  const take =
+    input.take ?? 10;
+
+  if (
+    !Number.isInteger(take) ||
+    take < 1 ||
+    take > 100
+  ) {
+    validationError(
+      "Take must be an integer between 1 and 100",
+    );
+  }
+
+  const cursor =
+    input.cursor?.trim() ||
+    undefined;
+
+  if (cursor) {
+    assertUuid(
+      cursor,
+      "cursor",
+    );
+  }
+
+  const filter =
+    input.filter ??
+    undefined;
+
+  const assignedAgentId =
+    filter?.assignedAgentId ??
+    undefined;
+
+  if (assignedAgentId) {
+    assertUuid(
+      assignedAgentId,
+      "assignedAgentId",
+    );
+  }
+
+  const where = {
+    ...(actor.role === "USER"
+      ? {
+          creatorId:
+            actor.id,
+        }
+      : {}),
+
+    ...(filter?.status
+      ? {
+          status:
+            filter.status,
+        }
+      : {}),
+
+    ...(filter?.priority
+      ? {
+          priority:
+            filter.priority,
+        }
+      : {}),
+
+    ...(assignedAgentId
+      ? {
+          assignedAgentId,
+        }
+      : {}),
+  };
+
+  const holidays =
+    await getHolidayDates();
+
+  const now =
+    new Date();
+
+  const desiredSLAState =
+    filter?.slaState ??
+    undefined;
+
+  const batchSize =
+    Math.min(
+      100,
+      Math.max(
+        take * 2,
+        20,
+      ),
+    );
+
+  const matchingTickets:
+    TicketView[] = [];
+
+  let scanCursor =
+    cursor;
+
+  let reachedEnd =
+    false;
+
+  while (
+    matchingTickets.length <
+      take + 1 &&
+    !reachedEnd
+  ) {
+    const tickets =
+      await prisma.ticket.findMany({
+        where,
+
+        take: batchSize,
+
+        ...(scanCursor
+          ? {
+              cursor: {
+                id: scanCursor,
+              },
+
+              skip: 1,
+            }
+          : {}),
+
+        orderBy: [
+          {
+            createdAt:
+              "desc",
+          },
+          {
+            id:
+              "desc",
+          },
+        ],
+
+        include: {
+          creator: true,
+          assignedAgent: true,
+
+          comments: {
+            include: {
+              author: true,
+            },
+
+            orderBy: {
+              createdAt:
+                "asc",
+            },
+          },
+        },
+      });
+
+    if (tickets.length === 0) {
+      reachedEnd = true;
+      break;
+    }
+
+    for (const ticket of tickets) {
+      const ticketView =
+        toTicketView(
+          ticket,
+          holidays,
+          now,
+        );
+
+      if (
+        !desiredSLAState ||
+        ticketView
+          .sla
+          .overallState ===
+          desiredSLAState
+      ) {
+        matchingTickets.push(
+          ticketView,
+        );
+      }
+
+      if (
+        matchingTickets.length >=
+        take + 1
+      ) {
+        break;
+      }
+    }
+
+    if (
+      tickets.length <
+      batchSize
+    ) {
+      reachedEnd = true;
+    }
+
+    const lastScannedTicket =
+      tickets[
+        tickets.length - 1
+      ];
+
+    if (lastScannedTicket) {
+      scanCursor =
+        lastScannedTicket.id;
+    }
+  }
+
+  const hasNextPage =
+    matchingTickets.length >
+    take;
+
+  const nodes =
+    matchingTickets.slice(
+      0,
+      take,
+    );
+
+  const lastNode =
+    nodes[
+      nodes.length - 1
+    ];
+
+  return {
+    nodes,
+
+    pageInfo: {
+      hasNextPage,
+
+      endCursor:
+        lastNode?.id ??
+        null,
+    },
+  };
 }

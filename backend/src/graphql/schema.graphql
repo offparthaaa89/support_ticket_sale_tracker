@@ -51,6 +51,7 @@ type SLAInfo {
 
   firstResponseState: SLAState!
   resolutionState: SLAState!
+  overallState: SLAState!
 
   firstResponseRemainingMinutes: Int!
   resolutionRemainingMinutes: Int!
@@ -68,7 +69,7 @@ type Ticket {
   creator: User!
   assignedAgent: User
 
-  firstResponseAt: String!
+  firstResponseAt: String
   resolvedAt: String
 
   sla: SLAInfo!
@@ -80,7 +81,7 @@ type Ticket {
 
   slaState: SLAState!
     @deprecated(
-      reason: "Use sla.resolutionState"
+      reason: "Use sla.overallState"
     )
 
   createdAt: String!
@@ -100,6 +101,23 @@ type TicketPage {
   limit: Int!
   total: Int!
   totalPages: Int!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type TicketConnection {
+  nodes: [Ticket!]!
+  pageInfo: PageInfo!
+}
+
+type TicketDashboard {
+  openTickets: Int!
+  inProgressTickets: Int!
+  atRiskTickets: Int!
+  breachedTickets: Int!
 }
 
 input RegisterInput {
@@ -138,6 +156,7 @@ input TicketFilterInput {
   status: TicketStatus
   priority: TicketPriority
   assignedAgentId: ID
+  slaState: SLAState
 }
 
 type Query {
@@ -151,9 +170,17 @@ type Query {
 
   tickets(
     filter: TicketFilterInput
+    take: Int = 10
+    cursor: String
+  ): TicketConnection!
+
+  ticketPage(
+    filter: TicketFilterInput
     page: Int = 1
     limit: Int = 10
   ): TicketPage!
+
+  dashboard: TicketDashboard!
 
   users(
     role: Role
