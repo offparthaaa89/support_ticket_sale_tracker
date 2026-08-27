@@ -32,6 +32,12 @@ type User {
   updatedAt: String!
 }
 
+type Holiday {
+  id: ID!
+  date: String!
+  name: String!
+}
+
 type Comment {
   id: ID!
   content: String!
@@ -39,19 +45,43 @@ type Comment {
   createdAt: String!
 }
 
+type SLAInfo {
+  firstResponseDueAt: String!
+  resolutionDueAt: String!
+
+  firstResponseState: SLAState!
+  resolutionState: SLAState!
+
+  firstResponseRemainingMinutes: Int!
+  resolutionRemainingMinutes: Int!
+}
+
 type Ticket {
   id: ID!
+
   title: String!
   description: String!
+
   priority: TicketPriority!
   status: TicketStatus!
 
   creator: User!
   assignedAgent: User
 
-  firstResponseAt: String
+  firstResponseAt: String!
+  resolvedAt: String
+
+  sla: SLAInfo!
+
   slaDeadline: String!
+    @deprecated(
+      reason: "Use sla.resolutionDueAt"
+    )
+
   slaState: SLAState!
+    @deprecated(
+      reason: "Use sla.resolutionState"
+    )
 
   createdAt: String!
   updatedAt: String!
@@ -114,25 +144,57 @@ type Query {
   health: String!
 
   me: User!
-  ticket(id: ID!): Ticket!
+
+  ticket(
+    id: ID!
+  ): Ticket!
 
   tickets(
     filter: TicketFilterInput
     page: Int = 1
     limit: Int = 10
   ): TicketPage!
+
+  users(
+    role: Role
+  ): [User!]!
+
+  holidays: [Holiday!]!
 }
 
 type Mutation {
-  register(input: RegisterInput!): AuthPayload!
+  register(
+    input: RegisterInput!
+  ): AuthPayload!
 
-  login(input: LoginInput!): AuthPayload!
+  login(
+    input: LoginInput!
+  ): AuthPayload!
 
-  createTicket(input: CreateTicketInput!): Ticket!
+  createTicket(
+    input: CreateTicketInput!
+  ): Ticket!
 
-  assignTicket(input: AssignTicketInput!): Ticket!
+  assignTicket(
+    input: AssignTicketInput!
+  ): Ticket!
 
-  updateTicketStatus(input: UpdateTicketStatusInput!): Ticket!
+  changeTicketStatus(
+    input: UpdateTicketStatusInput!
+  ): Ticket!
 
-  addComment(input: AddCommentInput!): Comment!
+  updateTicketStatus(
+    input: UpdateTicketStatusInput!
+  ): Ticket!
+    @deprecated(
+      reason: "Use changeTicketStatus"
+    )
+
+  resolveTicket(
+    ticketId: ID!
+  ): Ticket!
+
+  addComment(
+    input: AddCommentInput!
+  ): Comment!
 }
