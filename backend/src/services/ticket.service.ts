@@ -19,7 +19,7 @@ import { prisma } from "../lib/prisma";
 import {
   calculateSlaDeadline,
   getSlaState,
-  type SlaState,
+  type SLAState,
 } from "./sla.service";
 
 export interface CreateTicketInput {
@@ -86,7 +86,7 @@ interface TicketView {
   assignedAgent: UserView | null;
   firstResponseAt: string | null;
   slaDeadline: string;
-  slaState: SlaState;
+  slaState: SLAState;
   createdAt: string;
   updatedAt: string;
   comments: CommentView[];

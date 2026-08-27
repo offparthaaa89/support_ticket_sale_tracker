@@ -5,6 +5,7 @@
   "private": true,
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/luxon": "^3.7.5",
     "@types/pg": "^8.23.1",
     "prisma": "7"
   },
@@ -18,13 +19,14 @@
     "graphql": "^17.0.2",
     "graphql-yoga": "^5.22.0",
     "jose": "^6.2.10",
+    "luxon": "^3.7.2",
     "pg": "^8.23.0"
   },
   "scripts": {
-  "dev": "bun --watch src/server.ts",
-  "start": "bun src/server.ts",
-  "typecheck": "tsc --noEmit",
-  "test:unit": "bun test tests/unit",
-  "test:integration": "bun test tests/integration"
-}
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration"
+  }
 }

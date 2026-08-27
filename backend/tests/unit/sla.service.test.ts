@@ -5,228 +5,526 @@ import {
   } from "bun:test";
   
   import {
-    calculateSlaDeadline,
-    getSlaState,
+    calculateTicketSLADueTimes,
+    getTicketSLAInfo,
   } from "../../src/services/sla.service";
   
+  const INDIA_TIME_ZONE =
+    "Asia/Kolkata";
+  
+  function date(
+    iso: string,
+  ): Date {
+    return new Date(iso);
+  }
+  
   describe(
-    "calculateSlaDeadline",
+    "SLA business-hours engine",
     () => {
       test(
-        "calculates SLA during normal business hours",
+        "calculates normal weekday first-response and resolution deadlines",
         () => {
           // Arrange
           const createdAt =
-            new Date(
-              "2026-08-24T10:00:00Z",
+            date(
+              "2026-08-24T04:30:00.000Z",
             );
+          // Monday 10:00 IST
   
           // Act
-          const deadline =
-            calculateSlaDeadline(
+          const result =
+            calculateTicketSLADueTimes(
               createdAt,
               "HIGH",
+              [],
+              INDIA_TIME_ZONE,
             );
   
           // Assert
           expect(
-            deadline.toISOString(),
+            result
+              .firstResponseDueAt
+              .toISOString(),
           ).toBe(
-            "2026-08-24T14:00:00.000Z",
+            "2026-08-24T08:30:00.000Z",
           );
+          // Monday 14:00 IST
+  
+          expect(
+            result
+              .resolutionDueAt
+              .toISOString(),
+          ).toBe(
+            "2026-08-26T10:30:00.000Z",
+          );
+          // Wednesday 16:00 IST
         },
       );
   
       test(
-        "moves after-hours creation to the next business morning",
+        "starts counting at 09:00 when created before business hours",
         () => {
           const createdAt =
-            new Date(
-              "2026-08-24T18:00:00Z",
+            date(
+              "2026-08-24T01:30:00.000Z",
             );
+          // Monday 07:00 IST
   
-          const deadline =
-            calculateSlaDeadline(
+          const result =
+            calculateTicketSLADueTimes(
               createdAt,
               "URGENT",
+              [],
+              INDIA_TIME_ZONE,
             );
   
           expect(
-            deadline.toISOString(),
+            result
+              .firstResponseDueAt
+              .toISOString(),
           ).toBe(
-            "2026-08-25T11:00:00.000Z",
+            "2026-08-24T04:30:00.000Z",
           );
+          // Monday 10:00 IST
+  
+          expect(
+            result
+              .resolutionDueAt
+              .toISOString(),
+          ).toBe(
+            "2026-08-24T07:30:00.000Z",
+          );
+          // Monday 13:00 IST
         },
       );
   
       test(
-        "moves before-hours creation to business opening time",
+        "starts counting next day when created after business hours",
         () => {
           const createdAt =
-            new Date(
-              "2026-08-24T07:00:00Z",
+            date(
+              "2026-08-24T14:30:00.000Z",
+            );
+          // Monday 20:00 IST
+  
+          const result =
+            calculateTicketSLADueTimes(
+              createdAt,
+              "URGENT",
+              [],
+              INDIA_TIME_ZONE,
             );
   
-          const deadline =
-            calculateSlaDeadline(
+          expect(
+            result
+              .firstResponseDueAt
+              .toISOString(),
+          ).toBe(
+            "2026-08-25T04:30:00.000Z",
+          );
+          // Tuesday 10:00 IST
+  
+          expect(
+            result
+              .resolutionDueAt
+              .toISOString(),
+          ).toBe(
+            "2026-08-25T07:30:00.000Z",
+          );
+          // Tuesday 13:00 IST
+        },
+      );
+  
+      test(
+        "starts weekend tickets on the next business day",
+        () => {
+          const createdAt =
+            date(
+              "2026-08-29T06:30:00.000Z",
+            );
+          // Saturday 12:00 IST
+  
+          const result =
+            calculateTicketSLADueTimes(
               createdAt,
               "HIGH",
+              [],
+              INDIA_TIME_ZONE,
             );
   
           expect(
-            deadline.toISOString(),
+            result
+              .firstResponseDueAt
+              .toISOString(),
           ).toBe(
-            "2026-08-24T13:00:00.000Z",
+            "2026-08-31T07:30:00.000Z",
           );
+          // Monday 13:00 IST
         },
       );
   
       test(
-        "continues SLA on the next day when crossing 5 PM",
+        "uses only one minute on Friday at 17:59 before the weekend",
         () => {
           const createdAt =
-            new Date(
-              "2026-08-24T15:00:00Z",
+            date(
+              "2026-08-28T12:29:00.000Z",
+            );
+          // Friday 17:59 IST
+  
+          const result =
+            calculateTicketSLADueTimes(
+              createdAt,
+              "URGENT",
+              [],
+              INDIA_TIME_ZONE,
             );
   
-          const deadline =
-            calculateSlaDeadline(
+          expect(
+            result
+              .firstResponseDueAt
+              .toISOString(),
+          ).toBe(
+            "2026-08-31T04:29:00.000Z",
+          );
+          // Monday 09:59 IST
+        },
+      );
+  
+      test(
+        "skips a configured public holiday",
+        () => {
+          const createdAt =
+            date(
+              "2026-08-28T11:30:00.000Z",
+            );
+          // Friday 17:00 IST
+  
+          const mondayHoliday =
+            date(
+              "2026-08-31T00:00:00.000Z",
+            );
+  
+          const result =
+            calculateTicketSLADueTimes(
               createdAt,
               "HIGH",
+              [mondayHoliday],
+              INDIA_TIME_ZONE,
             );
   
           expect(
-            deadline.toISOString(),
+            result
+              .firstResponseDueAt
+              .toISOString(),
           ).toBe(
-            "2026-08-25T11:00:00.000Z",
+            "2026-09-01T06:30:00.000Z",
           );
+          // Tuesday 12:00 IST
         },
       );
   
       test(
-        "skips Saturday and Sunday",
+        "handles weekend followed by a holiday",
         () => {
           const createdAt =
-            new Date(
-              "2026-08-28T16:00:00Z",
+            date(
+              "2026-08-29T06:30:00.000Z",
+            );
+          // Saturday
+  
+          const mondayHoliday =
+            date(
+              "2026-08-31T00:00:00.000Z",
             );
   
-          const deadline =
-            calculateSlaDeadline(
+          const result =
+            calculateTicketSLADueTimes(
+              createdAt,
+              "URGENT",
+              [mondayHoliday],
+              INDIA_TIME_ZONE,
+            );
+  
+          expect(
+            result
+              .firstResponseDueAt
+              .toISOString(),
+          ).toBe(
+            "2026-09-01T04:30:00.000Z",
+          );
+          // Tuesday 10:00 IST
+        },
+      );
+  
+      test(
+        "supports SLA durations crossing multiple business days",
+        () => {
+          const createdAt =
+            date(
+              "2026-08-24T09:30:00.000Z",
+            );
+          // Monday 15:00 IST
+  
+          const result =
+            calculateTicketSLADueTimes(
               createdAt,
               "MEDIUM",
+              [],
+              INDIA_TIME_ZONE,
             );
   
           expect(
-            deadline.toISOString(),
+            result
+              .firstResponseDueAt
+              .toISOString(),
           ).toBe(
-            "2026-08-31T16:00:00.000Z",
+            "2026-08-25T08:30:00.000Z",
           );
-        },
-      );
-  
-      test(
-        "handles a multi-day LOW priority SLA",
-        () => {
-          const createdAt =
-            new Date(
-              "2026-08-24T09:00:00Z",
-            );
-  
-          const deadline =
-            calculateSlaDeadline(
-              createdAt,
-              "LOW",
-            );
+          // Tuesday 14:00 IST
   
           expect(
-            deadline.toISOString(),
+            result
+              .resolutionDueAt
+              .toISOString(),
           ).toBe(
-            "2026-08-25T17:00:00.000Z",
+            "2026-08-31T12:30:00.000Z",
           );
+          // Monday 18:00 IST
         },
       );
     },
   );
   
   describe(
-    "getSlaState",
+    "SLA states and clock freezing",
     () => {
       test(
-        "returns ON_TRACK when more than 25 percent of SLA remains",
+        "is ON_TRACK at exactly 75 percent consumed",
         () => {
-          const deadline =
-            new Date(
-              "2026-08-24T14:00:00Z",
+          const createdAt =
+            date(
+              "2026-08-24T04:30:00.000Z",
             );
+          // 10:00 IST
   
           const now =
-            new Date(
-              "2026-08-24T12:00:00Z",
+            date(
+              "2026-08-24T07:30:00.000Z",
             );
+          // 13:00 IST
+          // HIGH response budget = 4h
+          // exactly 3h consumed = 75%
   
-          const state =
-            getSlaState(
-              deadline,
-              "HIGH",
+          const result =
+            getTicketSLAInfo({
+              createdAt,
+              priority: "HIGH",
               now,
-            );
+              timeZone:
+                INDIA_TIME_ZONE,
+            });
   
-          expect(state).toBe(
-            "ON_TRACK",
-          );
+          expect(
+            result.firstResponseState,
+          ).toBe("ON_TRACK");
+  
+          expect(
+            result
+              .firstResponseRemainingMinutes,
+          ).toBe(60);
         },
       );
   
       test(
-        "returns AT_RISK when 25 percent or less of SLA remains",
+        "becomes AT_RISK once more than 75 percent is consumed",
         () => {
-          const deadline =
-            new Date(
-              "2026-08-24T14:00:00Z",
+          const createdAt =
+            date(
+              "2026-08-24T04:30:00.000Z",
             );
+          // 10:00 IST
   
           const now =
-            new Date(
-              "2026-08-24T13:30:00Z",
+            date(
+              "2026-08-24T07:31:00.000Z",
             );
+          // 13:01 IST
   
-          const state =
-            getSlaState(
-              deadline,
-              "HIGH",
+          const result =
+            getTicketSLAInfo({
+              createdAt,
+              priority: "HIGH",
               now,
-            );
+              timeZone:
+                INDIA_TIME_ZONE,
+            });
   
-          expect(state).toBe(
-            "AT_RISK",
-          );
+          expect(
+            result.firstResponseState,
+          ).toBe("AT_RISK");
         },
       );
   
       test(
-        "returns BREACHED when the deadline has been reached",
+        "marks active first-response SLA as BREACHED after deadline",
         () => {
-          const deadline =
-            new Date(
-              "2026-08-24T14:00:00Z",
+          const createdAt =
+            date(
+              "2026-08-24T04:30:00.000Z",
             );
+          // 10:00 IST
   
           const now =
-            new Date(
-              "2026-08-24T14:00:00Z",
+            date(
+              "2026-08-24T05:31:00.000Z",
             );
+          // 11:01 IST
   
-          const state =
-            getSlaState(
-              deadline,
-              "HIGH",
+          const result =
+            getTicketSLAInfo({
+              createdAt,
+              priority: "URGENT",
               now,
+              timeZone:
+                INDIA_TIME_ZONE,
+            });
+  
+          expect(
+            result.firstResponseState,
+          ).toBe("BREACHED");
+  
+          expect(
+            result
+              .firstResponseRemainingMinutes,
+          ).toBe(0);
+        },
+      );
+  
+      test(
+        "freezes first-response SLA at the first response time",
+        () => {
+          const createdAt =
+            date(
+              "2026-08-24T04:30:00.000Z",
+            );
+          // Monday 10:00 IST
+  
+          const firstResponseAt =
+            date(
+              "2026-08-24T05:00:00.000Z",
+            );
+          // Monday 10:30 IST
+  
+          const muchLater =
+            date(
+              "2026-08-27T06:30:00.000Z",
+            );
+          // Thursday 12:00 IST
+  
+          const result =
+            getTicketSLAInfo({
+              createdAt,
+              priority: "URGENT",
+              firstResponseAt,
+              now: muchLater,
+              timeZone:
+                INDIA_TIME_ZONE,
+            });
+  
+          expect(
+            result.firstResponseState,
+          ).toBe("ON_TRACK");
+  
+          expect(
+            result
+              .firstResponseRemainingMinutes,
+          ).toBe(0);
+        },
+      );
+  
+      test(
+        "freezes an AT_RISK resolution SLA after resolution",
+        () => {
+          const createdAt =
+            date(
+              "2026-08-24T04:30:00.000Z",
+            );
+          // 10:00 IST
+  
+          const resolvedAt =
+            date(
+              "2026-08-24T08:00:00.000Z",
+            );
+          // 13:30 IST
+          // URGENT resolution SLA = 4h
+          // 3.5h consumed = 87.5%
+  
+          const muchLater =
+            date(
+              "2026-08-27T06:30:00.000Z",
             );
   
-          expect(state).toBe(
-            "BREACHED",
-          );
+          const result =
+            getTicketSLAInfo({
+              createdAt,
+              priority: "URGENT",
+              resolvedAt,
+              now: muchLater,
+              timeZone:
+                INDIA_TIME_ZONE,
+            });
+  
+          expect(
+            result.resolutionState,
+          ).toBe("AT_RISK");
+  
+          expect(
+            result
+              .resolutionRemainingMinutes,
+          ).toBe(0);
+        },
+      );
+  
+      test(
+        "keeps a late completed SLA BREACHED",
+        () => {
+          const createdAt =
+            date(
+              "2026-08-24T04:30:00.000Z",
+            );
+          // 10:00 IST
+  
+          const firstResponseAt =
+            date(
+              "2026-08-24T05:35:00.000Z",
+            );
+          // 11:05 IST
+          // URGENT response was due 11:00
+  
+          const muchLater =
+            date(
+              "2026-08-27T06:30:00.000Z",
+            );
+  
+          const result =
+            getTicketSLAInfo({
+              createdAt,
+              priority: "URGENT",
+              firstResponseAt,
+              now: muchLater,
+              timeZone:
+                INDIA_TIME_ZONE,
+            });
+  
+          expect(
+            result.firstResponseState,
+          ).toBe("BREACHED");
+  
+          expect(
+            result
+              .firstResponseRemainingMinutes,
+          ).toBe(0);
         },
       );
     },
