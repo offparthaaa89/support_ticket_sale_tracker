@@ -1,58 +1,82 @@
 # Support Ticket & SLA Tracker
 
-A full-stack support ticket management application built as a product engineering take-home assignment.
+A full-stack support ticket management application built as a product-engineering take-home assignment.
 
-The application allows customers to create and track support requests while support agents can manage ticket ownership, progress tickets through their lifecycle, communicate with customers, and monitor SLA health.
+Customers can create and track support requests, while support agents can manage ownership, progress tickets through a controlled lifecycle, communicate with customers, and monitor first-response and resolution SLA health.
 
-The project focuses on clear business rules, strict TypeScript, GraphQL APIs, PostgreSQL persistence, meaningful authorization, automated testing, and a responsive React interface.
+The project emphasizes strict TypeScript, schema-first GraphQL, PostgreSQL persistence, backend-enforced authorization, business-hour-aware SLA logic, automated testing, and a responsive React interface.
 
 ---
 
 ## Features
 
-### Authentication
+### Authentication and Authorization
 
-- Customer and support-agent authentication
-- JWT-based authentication
-- Password hashing using Argon2id
-- Current-user session lookup through GraphQL
-- Protected GraphQL operations
-- Role-aware frontend experience
+- JWT bearer-token authentication
+- Argon2id password hashing
+- Public registration creates `USER` accounts only
+- `USER` acts as the reporter/customer role
+- `AGENT` accounts have elevated support permissions
+- Backend authorization is the source of truth
+- Frontend hides unavailable actions only for usability
 
-Public registration creates `USER` accounts only. `AGENT` accounts are promoted separately so public users cannot grant themselves elevated privileges.
+A `USER` can:
+
+- create tickets
+- view their own tickets
+- filter their own tickets
+- add comments to their own tickets
+
+An `AGENT` can:
+
+- view the support queue
+- filter tickets
+- assign or reassign tickets
+- change ticket status
+- resolve tickets
+- add support comments
 
 ---
 
 ### Ticket Management
 
-Customers can:
+Each ticket includes:
 
-- Create support tickets
-- View their own tickets
-- View ticket details
-- Filter their tickets
-- Add comments
-- Track ticket status
-- Track assigned support agent
-- Track SLA deadline and SLA state
+- title
+- description
+- priority
+- status
+- reporter
+- optional assigned agent
+- comments
+- first-response timestamp
+- resolution timestamp
+- first-response SLA information
+- resolution SLA information
 
-Support agents can:
+Supported priorities:
 
-- View the support ticket queue
-- Filter tickets by status
-- Filter tickets by priority
-- Filter tickets by assigned agent
-- Assign or take ownership of tickets
-- Reassign tickets
-- Progress ticket status
-- Add support comments
-- See SLA state and deadlines
+```text
+LOW
+MEDIUM
+HIGH
+URGENT
+```
+
+Supported statuses:
+
+```text
+OPEN
+IN_PROGRESS
+RESOLVED
+CLOSED
+```
 
 ---
 
 ### Ticket Lifecycle
 
-Tickets follow a sequential lifecycle:
+Tickets follow a sequential workflow:
 
 ```text
 OPEN
@@ -64,37 +88,113 @@ RESOLVED
 CLOSED
 ```
 
-Invalid transitions such as:
+Examples of rejected transitions:
 
 ```text
+OPEN → RESOLVED
 OPEN → CLOSED
+IN_PROGRESS → CLOSED
+RESOLVED → IN_PROGRESS
 ```
 
-are rejected by the backend.
+The backend validates every transition, so a client cannot bypass lifecycle rules by calling GraphQL directly.
+
+`resolveTicket` uses the same lifecycle rules and therefore resolves only an `IN_PROGRESS` ticket.
 
 ---
 
 ### Comments and First Response
 
-Both customers and agents can participate in a ticket conversation.
+Both reporters and agents can participate in a ticket conversation.
 
-The first comment made by an `AGENT` records:
+The first qualifying `AGENT` comment records:
 
 ```text
 firstResponseAt
 ```
 
-Customer comments do not set the first-response timestamp.
+Important rules:
 
-Later agent comments do not overwrite the original first response.
+- reporter comments do not set `firstResponseAt`
+- the first agent comment sets it
+- later agent comments cannot overwrite it
+- the update is performed transactionally with comment creation
+
+For this take-home, comments are still allowed after a ticket is closed. A larger production system could lock or reopen closed conversations depending on product policy.
 
 ---
 
-### SLA Tracking
+## SLA Tracking
 
-Every ticket receives an SLA deadline when it is created.
+SLA logic is isolated in:
 
-Supported SLA states:
+```text
+backend/src/services/sla.service.ts
+```
+
+The frontend does **not** calculate SLA state or breach status itself. The GraphQL API is the source of truth.
+
+### Business Calendar
+
+Default business timezone:
+
+```text
+Asia/Kolkata
+```
+
+Configured through:
+
+```env
+BUSINESS_TIMEZONE=Asia/Kolkata
+```
+
+Business hours:
+
+```text
+Monday – Friday
+09:00 – 18:00
+```
+
+The SLA engine excludes:
+
+- time before 09:00
+- time after 18:00
+- Saturdays
+- Sundays
+- configured holidays
+
+PostgreSQL timestamps are stored in UTC, GraphQL returns ISO-8601 timestamps, and the frontend displays dates in the user's local timezone.
+
+---
+
+### SLA Policies
+
+| Priority | First Response | Resolution |
+|---|---:|---:|
+| `URGENT` | 1 business hour | 4 business hours |
+| `HIGH` | 4 business hours | 24 business hours |
+| `MEDIUM` | 8 business hours | 48 business hours |
+| `LOW` | 24 business hours | 72 business hours |
+
+The API exposes both clocks:
+
+```text
+firstResponseDueAt
+resolutionDueAt
+
+firstResponseState
+resolutionState
+overallState
+
+firstResponseRemainingMinutes
+resolutionRemainingMinutes
+```
+
+---
+
+### SLA State Rules
+
+Supported states:
 
 ```text
 ON_TRACK
@@ -102,115 +202,175 @@ AT_RISK
 BREACHED
 ```
 
-The SLA state is derived dynamically from the ticket deadline rather than stored as a separate database field.
+Boundary behavior is intentional:
+
+- `ON_TRACK`: 0% through exactly 75% consumed
+- `AT_RISK`: more than 75% consumed
+- `BREACHED`: evaluation time is after the deadline
+
+Therefore:
+
+```text
+exactly 75% consumed → ON_TRACK
+75% + 1 minute       → AT_RISK
+exact deadline       → not yet BREACHED
+after deadline       → BREACHED
+```
+
+`overallState` is the most severe of the first-response and resolution states.
 
 ---
 
-### Filtering and Pagination
+### SLA Clock Freezing
 
-Ticket lists support:
-
-- status filtering
-- priority filtering
-- assigned-agent filtering
-- combined filters
-- offset pagination
-
-Pagination defaults:
+First-response SLA:
 
 ```text
-page = 1
-limit = 10
+active until firstResponseAt
 ```
 
-Maximum allowed page size:
+Once the first agent response is recorded, the first-response SLA is evaluated at that timestamp forever. A response that was on time cannot later become breached simply because more wall-clock time passes.
+
+Resolution SLA:
 
 ```text
-100
+active until resolvedAt
 ```
+
+Once the ticket is resolved, the resolution SLA is evaluated at `resolvedAt` and remains frozen.
+
+Completed clocks return:
+
+```text
+remainingMinutes = 0
+```
+
+If the completion happened late, the frozen final state remains `BREACHED`.
 
 ---
 
-### Responsive Frontend
+### Holiday Calendar
 
-The React frontend includes the required product screens:
+Holidays are stored in PostgreSQL using the `Holiday` model:
 
-- Login
-- Ticket dashboard
-- Create ticket
-- Ticket details
+```text
+id
+date
+name
+createdAt
+```
 
-The interface includes:
+The SLA engine receives configured holiday dates and excludes those dates from business-time calculations.
 
-- responsive layouts
-- semantic ticket badges
-- SLA urgency indicators
-- loading states
-- empty states
-- error states
-- keyboard focus states
-- customer-specific actions
-- agent-specific actions
+The API also exposes a `holidays` query.
 
-A customer registration screen was intentionally not added because it was outside the required frontend scope. The backend `register` mutation still supports customer registration.
+---
+
+## Filtering, Pagination, Sorting, and Dashboard
+
+### Ticket Filters
+
+Ticket lists support backend filtering by:
+
+- status
+- priority
+- assigned agent
+- SLA state
+
+A `USER` is always restricted to tickets they created.
+
+### Cursor Pagination
+
+The canonical ticket list uses cursor pagination:
+
+```graphql
+tickets(
+  filter: TicketFilterInput
+  take: Int = 10
+  cursor: String
+): TicketConnection!
+```
+
+Response shape:
+
+```text
+nodes
+pageInfo.hasNextPage
+pageInfo.endCursor
+```
+
+A temporary deprecated/compatibility offset-style `ticketPage` query remains in the schema while the application transitions fully to the cursor API.
+
+### Frontend Sorting
+
+The frontend supports:
+
+- newest
+- oldest
+- priority
+- SLA severity
+
+Sorting is currently performed within the fetched cursor page. Global cross-page sorting would be a reasonable follow-up improvement.
+
+### Dashboard
+
+The backend exposes dashboard statistics including:
+
+- open tickets
+- in-progress tickets
+- at-risk tickets
+- breached tickets
+
+The frontend displays these values as dashboard summary cards.
 
 ---
 
 ## Architecture
-
-The project uses a simple layered architecture:
 
 ```text
 ┌───────────────────────────────┐
 │        React Frontend         │
 │     TypeScript + Vite         │
 └───────────────┬───────────────┘
-                │
-                │ HTTP POST /graphql
+                │ HTTP / GraphQL
                 ▼
 ┌───────────────────────────────┐
 │        GraphQL Yoga API       │
-│     Schema + Resolvers        │
+│   Schema-first + Resolvers    │
 └───────────────┬───────────────┘
                 │
                 ▼
 ┌───────────────────────────────┐
 │      Application Services     │
 │                               │
-│  Authentication              │
-│  Tickets                     │
-│  Comments                    │
-│  SLA                         │
-│  Ticket lifecycle rules      │
+│  auth.service.ts              │
+│  ticket.service.ts            │
+│  comment.service.ts           │
+│  holiday.service.ts           │
+│  sla.service.ts               │
+│  ticket-rules.ts              │
 └───────────────┬───────────────┘
                 │
                 ▼
 ┌───────────────────────────────┐
-│            Prisma             │
+│          Prisma ORM           │
+│     PostgreSQL Adapter        │
 └───────────────┬───────────────┘
                 │
                 ▼
 ┌───────────────────────────────┐
 │         PostgreSQL 17         │
-│       Docker Compose          │
+│        Docker Compose         │
 └───────────────────────────────┘
 ```
 
-Authentication is created in the GraphQL request context and authorization is enforced before protected application operations execute.
+Resolvers are intentionally thin. Business logic lives in services rather than GraphQL resolver functions.
 
-Resolvers remain thin and delegate business behavior to the service layer.
+The project does not add a repository layer because Prisma already provides the typed persistence abstraction needed for this scope.
 
----
+The frontend uses native `fetch` through a small typed GraphQL helper rather than Apollo Client because normalized client-side caching is not required for this application.
 
-## Why This Architecture?
-
-The project intentionally avoids unnecessary layers.
-
-For example, there is no additional repository layer between Prisma and the services because Prisma already provides a strong persistence abstraction for a project of this size.
-
-Likewise, the frontend does not use Redux, Zustand, Apollo Client, or another state-management framework because the current application does not require that level of complexity.
-
-The goal is to keep the architecture easy to understand while maintaining clear responsibility boundaries.
+Redux/Zustand are also intentionally omitted because local React state is sufficient.
 
 ---
 
@@ -219,14 +379,16 @@ The goal is to keep the architecture easy to understand while maintaining clear 
 ### Backend
 
 - Bun
-- TypeScript
+- TypeScript in strict mode
 - GraphQL
 - GraphQL Yoga
 - Prisma ORM
 - Prisma PostgreSQL adapter
-- PostgreSQL
+- PostgreSQL 17
 - JOSE for JWT handling
-- Bun password hashing with Argon2id
+- Luxon for IANA-timezone-aware business-time calculations
+- Bun Argon2id password hashing
+- Oxlint
 
 ### Frontend
 
@@ -234,19 +396,16 @@ The goal is to keep the architecture easy to understand while maintaining clear 
 - TypeScript
 - Vite
 - React Router
-- Native `fetch` through a small typed GraphQL request helper
+- Native `fetch` GraphQL client
+- Oxlint
 
-### Infrastructure
+### Infrastructure and Testing
 
 - Docker
 - Docker Compose
-- PostgreSQL 17
-
-### Testing
-
 - Bun test runner
-- Unit tests
-- Real PostgreSQL integration testing
+- unit tests
+- real PostgreSQL integration tests
 
 ---
 
@@ -255,40 +414,26 @@ The goal is to keep the architecture easy to understand while maintaining clear 
 ```text
 support-ticket-sla-tracker/
 ├── README.md
+├── WALKTHROUGH.md
 │
 ├── backend/
 │   ├── compose.yml
+│   ├── package.json
 │   ├── prisma.config.ts
+│   ├── .env.example
+│   ├── .oxlintrc.json
+│   │
 │   ├── prisma/
 │   │   ├── schema.prisma
-│   │   └── migrations/
+│   │   ├── migrations/
+│   │   └── seed.ts
 │   │
 │   ├── src/
 │   │   ├── auth/
-│   │   │   ├── authorization.ts
-│   │   │   ├── context.ts
-│   │   │   └── jwt.ts
-│   │   │
 │   │   ├── config/
-│   │   │   └── env.ts
-│   │   │
 │   │   ├── graphql/
-│   │   │   ├── resolvers/
-│   │   │   │   ├── mutation.resolver.ts
-│   │   │   │   └── query.resolver.ts
-│   │   │   ├── schema.graphql
-│   │   │   └── schema.ts
-│   │   │
 │   │   ├── lib/
-│   │   │   └── prisma.ts
-│   │   │
 │   │   ├── services/
-│   │   │   ├── auth.service.ts
-│   │   │   ├── comment.service.ts
-│   │   │   ├── sla.service.ts
-│   │   │   ├── ticket-rules.ts
-│   │   │   └── ticket.service.ts
-│   │   │
 │   │   └── server.ts
 │   │
 │   └── tests/
@@ -296,24 +441,23 @@ support-ticket-sla-tracker/
 │       └── integration/
 │
 └── frontend/
-    ├── src/
-    │   ├── api/
-    │   ├── components/
-    │   ├── pages/
-    │   ├── utils/
-    │   ├── App.tsx
-    │   ├── main.tsx
-    │   ├── index.css
-    │   └── types.ts
-    │
-    └── vite.config.ts
+    ├── package.json
+    ├── .env.example
+    ├── .oxlintrc.json
+    └── src/
+        ├── api/
+        ├── components/
+        ├── pages/
+        ├── utils/
+        ├── App.tsx
+        ├── main.tsx
+        ├── index.css
+        └── types.ts
 ```
 
 ---
 
 ## Database Design
-
-The main database contains three application models.
 
 ### User
 
@@ -336,13 +480,7 @@ USER
 AGENT
 ```
 
-A user may:
-
-- create many tickets
-- be assigned many tickets as an agent
-- author many comments
-
----
+`USER` is the reporter/customer role used by this implementation.
 
 ### Ticket
 
@@ -357,34 +495,15 @@ status
 creatorId
 assignedAgentId
 firstResponseAt
+resolvedAt
 slaDeadline
 createdAt
 updatedAt
 ```
 
-Priorities:
+`resolvedAt` freezes the resolution SLA clock.
 
-```text
-LOW
-MEDIUM
-HIGH
-URGENT
-```
-
-Statuses:
-
-```text
-OPEN
-IN_PROGRESS
-RESOLVED
-CLOSED
-```
-
-Every ticket belongs to one creator.
-
-A ticket may optionally be assigned to one support agent.
-
----
+`slaDeadline` is retained as a compatibility field and stores the resolution due time calculated at ticket creation. The canonical API exposes dual SLA information through `ticket.sla`.
 
 ### Comment
 
@@ -398,172 +517,210 @@ authorId
 createdAt
 ```
 
-Every comment belongs to:
+### Holiday
 
-- one ticket
-- one author
+Important fields:
 
-Deleting a ticket cascades to its comments.
+```text
+id
+date
+name
+createdAt
+```
+
+Holiday dates affect SLA business-time calculations.
 
 ---
 
 ## Database Relationships
 
 ```text
-User
- │
- ├── creates ────────────┐
- │                       ▼
- │                    Ticket
- │                       │
- │                       └── has many ───► Comment
- │                                         ▲
- │                                         │
- └── authors comments ─────────────────────┘
+Reporter USER
+     │
+     └──────── creates ───────────► Ticket
+                                      │
+                                      ├── assigned to ───► AGENT User
+                                      │
+                                      └── has many ──────► Comment
+                                                             ▲
+                                                             │
+User / Agent ───────── authors comments ──────────────────────┘
 
-AGENT User
- │
- └── optionally assigned to ─────────────► Ticket
+Holiday ─────────────── used by SLA business calendar
 ```
 
 ---
 
-## SLA Assumptions
+# GraphQL API
 
-For the scope of this project, SLA calculations use the following assumptions.
-
-### Business Hours
+Development endpoint:
 
 ```text
-Monday – Friday
-09:00 – 17:00 UTC
+http://localhost:4000/graphql
 ```
 
-Weekends are skipped.
+## Queries
 
-A holiday calendar is not included.
+```text
+health
+me
+ticket(id)
+tickets(filter, take, cursor)
+ticketPage(filter, page, limit)   [compatibility]
+dashboard
+users(role)
+holidays
+```
+
+### Canonical Ticket List Example
+
+```graphql
+query Tickets(
+  $filter: TicketFilterInput
+  $take: Int
+  $cursor: String
+) {
+  tickets(
+    filter: $filter
+    take: $take
+    cursor: $cursor
+  ) {
+    nodes {
+      id
+      title
+      priority
+      status
+
+      assignedAgent {
+        id
+        name
+      }
+
+      sla {
+        firstResponseDueAt
+        resolutionDueAt
+        firstResponseState
+        resolutionState
+        overallState
+        firstResponseRemainingMinutes
+        resolutionRemainingMinutes
+      }
+    }
+
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+### Dashboard Example
+
+```graphql
+query Dashboard {
+  dashboard {
+    openTickets
+    inProgressTickets
+    atRiskTickets
+    breachedTickets
+  }
+}
+```
 
 ---
 
-### SLA Duration by Priority
-
-| Priority | Business Hours |
-|---|---:|
-| URGENT | 2 |
-| HIGH | 4 |
-| MEDIUM | 8 |
-| LOW | 16 |
-
-Example:
+## Mutations
 
 ```text
-HIGH ticket created Monday at 15:00 UTC
-
-Monday:
-15:00 → 17:00 = 2 business hours
-
-Remaining:
-2 hours
-
-Tuesday:
-09:00 → 11:00
-
-SLA deadline:
-Tuesday 11:00 UTC
+register
+login
+createTicket
+assignTicket
+changeTicketStatus
+updateTicketStatus        [deprecated compatibility alias]
+resolveTicket
+addComment
 ```
 
----
+### Login Example
 
-### SLA State
+```graphql
+mutation Login {
+  login(
+    input: {
+      email: "reporter@example.com"
+      password: "Password123!"
+    }
+  ) {
+    token
 
-A ticket is:
-
-```text
-ON_TRACK
+    user {
+      id
+      name
+      email
+      role
+    }
+  }
+}
 ```
 
-while more than 25% of its allowed SLA time remains.
+### Create Ticket Example
 
-It becomes:
+```graphql
+mutation CreateTicket {
+  createTicket(
+    input: {
+      title: "Checkout failure"
+      description: "Customers receive an error while completing checkout."
+      priority: HIGH
+    }
+  ) {
+    id
+    status
 
-```text
-AT_RISK
+    sla {
+      firstResponseDueAt
+      resolutionDueAt
+      overallState
+    }
+  }
+}
 ```
 
-when 25% or less of the SLA duration remains.
+### Add Comment Example
 
-It becomes:
-
-```text
-BREACHED
+```graphql
+mutation AddComment($ticketId: ID!) {
+  addComment(
+    input: {
+      ticketId: $ticketId
+      content: "I am investigating this issue now."
+    }
+  ) {
+    id
+    content
+    createdAt
+  }
+}
 ```
 
-when the current time reaches or exceeds the SLA deadline.
+### Resolve Ticket Example
 
-SLA state is calculated dynamically and is not persisted separately.
+```graphql
+mutation ResolveTicket($ticketId: ID!) {
+  resolveTicket(ticketId: $ticketId) {
+    id
+    status
+    resolvedAt
 
-`firstResponseAt` is tracked independently from the SLA state.
-
----
-
-## Authentication and Authorization
-
-Authentication uses JWT bearer tokens.
-
-Protected GraphQL requests send:
-
-```http
-Authorization: Bearer <JWT>
+    sla {
+      resolutionState
+      resolutionRemainingMinutes
+    }
+  }
+}
 ```
-
-Access tokens expire after one hour.
-
-Passwords are hashed using Argon2id before storage.
-
-### Authorization Rules
-
-`USER`:
-
-- can create tickets
-- can view their own tickets
-- can comment on their own tickets
-- cannot assign tickets
-- cannot update ticket status
-
-`AGENT`:
-
-- can view the support queue
-- can view all tickets
-- can filter tickets
-- can assign/reassign tickets
-- can update ticket status
-- can comment on tickets
-
-Public registration always creates a:
-
-```text
-USER
-```
-
-and cannot create an agent account directly.
-
----
-
-## Error Handling
-
-The GraphQL API uses meaningful error codes including:
-
-```text
-UNAUTHENTICATED
-FORBIDDEN
-NOT_FOUND
-BAD_USER_INPUT
-VALIDATION_ERROR
-```
-
-Expected business errors are returned with safe messages.
-
-Unexpected internal errors are masked so Prisma, SQL, filesystem, or infrastructure details are not exposed to API clients.
 
 ---
 
@@ -590,7 +747,7 @@ docker compose version
 ## 1. Clone the Repository
 
 ```bash
-git clone <https://github.com/offparthaaa89/support_ticket_sale_tracker.git>
+git clone https://github.com/offparthaaa89/support_ticket_sale_tracker.git
 cd support-ticket-sla-tracker
 ```
 
@@ -598,29 +755,13 @@ cd support-ticket-sla-tracker
 
 # Backend Setup
 
-Move into the backend:
-
 ```bash
 cd backend
-```
-
-Install dependencies:
-
-```bash
 bun install
-```
-
-Create the local environment file:
-
-```bash
 cp .env.example .env
 ```
 
----
-
-## Backend Environment Variables
-
-Example:
+Example backend environment:
 
 ```env
 PORT=4000
@@ -631,9 +772,9 @@ POSTGRES_DB=support_ticket_db
 
 DATABASE_URL="postgresql://support_user:support_password@localhost:5432/support_ticket_db"
 
-TEST_DATABASE_URL="postgresql://support_user:support_password@localhost:5432/support_ticket_test_db"
-
 JWT_SECRET="replace-with-a-long-random-secret-at-least-32-bytes"
+
+BUSINESS_TIMEZONE=Asia/Kolkata
 ```
 
 Do not commit the real `.env` file.
@@ -646,55 +787,71 @@ From `backend/`:
 
 ```bash
 docker compose up -d
-```
-
-Check the container:
-
-```bash
 docker compose ps
 ```
 
-PostgreSQL should eventually show as healthy.
+PostgreSQL should become healthy.
 
 ---
 
-## Apply Prisma Migrations
-
-To apply the already committed migrations:
+## Apply Migrations
 
 ```bash
 bunx --bun prisma migrate deploy
+bunx --bun prisma generate
 ```
 
-The project migrations create the PostgreSQL schema for:
-
-```text
-User
-Ticket
-Comment
-```
-
----
-
-## Development Migration Command
-
-When intentionally changing `schema.prisma` during development, create a real migration with:
+When intentionally changing `schema.prisma` during development:
 
 ```bash
 bunx --bun prisma migrate dev --name <migration-name>
 ```
 
-Do not manually edit the database schema instead of using Prisma migrations.
+Do not use `prisma db push` as a substitute for committed migrations.
 
 ---
 
-## Start the Backend
+## Seed Demo Data
+
+From `backend/`:
+
+```bash
+bun prisma/seed.ts
+```
+
+Seeded accounts:
+
+```text
+Reporter
+Email:    reporter@example.com
+Password: Password123!
+
+Agent
+Email:    agent@example.com
+Password: Password123!
+```
+
+The seed also creates:
+
+- one `URGENT` ticket
+- one `HIGH` ticket
+- one `MEDIUM` ticket
+- one `LOW` ticket
+- sample comments
+- representative lifecycle states
+- one sample holiday (`Gandhi Jayanti`, 2026-10-02)
+
+The seed is designed to be rerunnable without wiping unrelated application data.
+
+---
+
+## Start Backend
 
 ```bash
 bun run dev
 ```
 
-GraphQL will be available at:
+GraphQL:
 
 ```text
 http://localhost:4000/graphql
@@ -704,21 +861,11 @@ http://localhost:4000/graphql
 
 # Frontend Setup
 
-Open another terminal from the repository root:
+In another terminal:
 
 ```bash
 cd frontend
-```
-
-Install dependencies:
-
-```bash
 bun install
-```
-
-Create the local frontend environment file:
-
-```bash
 cp .env.example .env
 ```
 
@@ -734,7 +881,7 @@ Start Vite:
 bun run dev
 ```
 
-The frontend will normally be available at:
+Typical development URL:
 
 ```text
 http://localhost:5173
@@ -742,129 +889,30 @@ http://localhost:5173
 
 ---
 
-# Creating Local Accounts
-
-The frontend intentionally contains a Login screen but not a registration screen.
-
-Customer registration is available through GraphQL.
-
-Open:
-
-```text
-http://localhost:4000/graphql
-```
-
-and run:
-
-```graphql
-mutation Register {
-  register(
-    input: {
-      name: "Demo Customer"
-      email: "customer@example.com"
-      password: "CustomerPass123"
-    }
-  ) {
-    token
-
-    user {
-      id
-      name
-      email
-      role
-    }
-  }
-}
-```
-
-The created account will have:
-
-```text
-role = USER
-```
-
----
-
-## Creating a Local Agent
-
-For local/demo use, first register another account:
-
-```graphql
-mutation RegisterAgentAccount {
-  register(
-    input: {
-      name: "Demo Agent"
-      email: "agent@example.com"
-      password: "AgentPass123"
-    }
-  ) {
-    user {
-      id
-      email
-      role
-    }
-  }
-}
-```
-
-Then promote it in PostgreSQL:
-
-```bash
-docker compose exec postgres \
-psql -U support_user \
--d support_ticket_db \
--c "UPDATE \"User\" SET role = 'AGENT' WHERE email = 'agent@example.com';"
-```
-
-After changing the role, log in again so the newly issued JWT contains the `AGENT` role.
-
-No production/demo passwords are hard-coded in the repository.
-
----
-
-# Development Commands
+# Development and Quality Commands
 
 ## Backend
 
-From:
-
-```text
-backend/
-```
-
-start development server:
+From `backend/`:
 
 ```bash
 bun run dev
-```
-
-Run TypeScript validation:
-
-```bash
 bun run typecheck
+bun run lint
+bun run test:unit
 ```
-
----
 
 ## Frontend
 
-From:
-
-```text
-frontend/
-```
-
-start the development server:
+From `frontend/`:
 
 ```bash
 bun run dev
-```
-
-Build the production frontend bundle:
-
-```bash
+bun run lint
 bun run build
 ```
+
+Both projects use Oxlint, and explicit `any` is treated as an error.
 
 ---
 
@@ -878,296 +926,137 @@ From `backend/`:
 bun run test:unit
 ```
 
-Unit tests cover important business behavior including:
+Current unit coverage includes:
 
-- normal business-hour SLA calculation
-- before-hours handling
-- after-hours handling
-- crossing the business-day boundary
+- normal weekday SLA calculation
+- before-business-hours behavior
+- after-business-hours behavior
 - weekend handling
+- Friday near business close
+- configured public holiday
+- weekend + holiday combination
 - multi-day SLA calculation
-- `ON_TRACK`
+- first-response deadline
+- resolution deadline
+- exact 75% `ON_TRACK` boundary
 - `AT_RISK`
 - `BREACHED`
-- valid ticket lifecycle transitions
-- invalid lifecycle transitions
-- authentication guards
-- agent authorization
+- first-response SLA freezing
+- resolution SLA freezing
+- completed SLA remaining completed
+- overall SLA severity
+- valid status transitions
+- invalid status transitions
+- authentication helper behavior
+- agent authorization helper behavior
+
+At the current verified state:
+
+```text
+30 unit tests pass
+0 unit test failures
+```
 
 ---
 
-## PostgreSQL Integration Test
+## Real PostgreSQL Integration Tests
 
-The integration test uses a real PostgreSQL database.
+The integration suite uses a real PostgreSQL database through Prisma.
 
-It does not mock PostgreSQL.
+PostgreSQL is **not mocked**.
 
-Create the dedicated test database:
+### Create the test database once
+
+From `backend/`:
 
 ```bash
 docker compose exec postgres \
 createdb -U support_user support_ticket_test_db
 ```
 
-If the database already exists, this step can be skipped.
+If it already exists, skip this step.
 
-Apply migrations to the test database:
+### Apply migrations to the test database
 
 ```bash
 DATABASE_URL="postgresql://support_user:support_password@localhost:5432/support_ticket_test_db" \
 bunx --bun prisma migrate deploy
 ```
 
-Run:
+### Run integration tests safely against the test database
 
 ```bash
+DATABASE_URL="postgresql://support_user:support_password@localhost:5432/support_ticket_test_db" \
 bun run test:integration
 ```
 
-The integration test verifies a real flow through:
+The integration suite exercises real persistence for:
+
+- user creation
+- ticket creation
+- persisted SLA deadline
+- invalid ticket validation
+- reporter ownership authorization
+- reporter comments
+- agent first response
+- protection against overwriting `firstResponseAt`
+- invalid assignment
+- valid agent assignment
+- invalid status transition
+- `OPEN → IN_PROGRESS → RESOLVED`
+- persisted `resolvedAt`
+- Prisma relations
+
+At the current verified state:
 
 ```text
-Prisma
-  ↓
-PostgreSQL
-  ↓
-User persistence
-  ↓
-Ticket persistence
-  ↓
-relational query
-  ↓
-database verification
+11 integration tests pass
+0 integration test failures
 ```
 
 ---
 
-## Full Backend Verification
+## Full Verification Checklist
+
+Backend:
 
 ```bash
+cd backend
+
+bun run lint
 bun run typecheck
 bun run test:unit
+
+DATABASE_URL="postgresql://support_user:support_password@localhost:5432/support_ticket_test_db" \
 bun run test:integration
 ```
 
+Frontend:
+
+```bash
+cd frontend
+
+bun run lint
+bun run build
+```
+
 ---
 
-# GraphQL API Overview
+# Error Handling
 
-Endpoint:
+Expected application errors use meaningful GraphQL error codes such as:
 
 ```text
-POST /graphql
+UNAUTHENTICATED
+FORBIDDEN
+NOT_FOUND
+BAD_USER_INPUT
+VALIDATION_ERROR
 ```
 
-Development URL:
+Expected business failures are returned with safe messages.
 
-```text
-http://localhost:4000/graphql
-```
-
----
-
-## Queries
-
-### `health`
-
-Public health check.
-
-```graphql
-query {
-  health
-}
-```
-
----
-
-### `me`
-
-Returns the currently authenticated user.
-
-Authentication required.
-
----
-
-### `ticket(id: ID!)`
-
-Returns one ticket.
-
-Authorization:
-
-```text
-USER
-→ own ticket only
-
-AGENT
-→ any ticket
-```
-
----
-
-### `tickets(...)`
-
-Returns a paginated ticket list.
-
-Supports filtering by:
-
-```text
-status
-priority
-assignedAgentId
-```
-
-A `USER` is always restricted to their own tickets by the backend.
-
----
-
-## Mutations
-
-### `register`
-
-Creates a customer account.
-
-Public.
-
-Always creates:
-
-```text
-USER
-```
-
----
-
-### `login`
-
-Authenticates a user and returns:
-
-```text
-JWT
-+
-user
-```
-
----
-
-### `createTicket`
-
-Creates a support ticket.
-
-Allowed:
-
-```text
-USER
-```
-
----
-
-### `assignTicket`
-
-Assigns or reassigns a ticket to an agent.
-
-Allowed:
-
-```text
-AGENT
-```
-
-The target user must also have:
-
-```text
-role = AGENT
-```
-
----
-
-### `updateTicketStatus`
-
-Progresses a ticket through the supported lifecycle.
-
-Allowed:
-
-```text
-AGENT
-```
-
----
-
-### `addComment`
-
-Adds a comment to a ticket.
-
-Allowed:
-
-```text
-USER
-→ own ticket
-
-AGENT
-→ tickets in the support system
-```
-
-The first agent comment sets `firstResponseAt`.
-
----
-
-# Example Authenticated GraphQL Request
-
-```http
-POST /graphql
-Content-Type: application/json
-Authorization: Bearer <JWT>
-```
-
-Conceptual request body:
-
-```json
-{
-  "query": "query { me { id name email role } }"
-}
-```
-
-The React frontend sends these requests through a small typed wrapper around the native `fetch` API.
-
----
-
-# Important Business Rules
-
-### Customer Ticket Ownership
-
-Users can only view and comment on tickets they created.
-
-This restriction is enforced by the backend and is not dependent on the React UI.
-
----
-
-### Agent Assignment
-
-Only authenticated agents may assign tickets.
-
-The target assigned user must also be an agent.
-
----
-
-### Ticket Status
-
-Only agents may change ticket status.
-
-Status changes must follow:
-
-```text
-OPEN
-→ IN_PROGRESS
-→ RESOLVED
-→ CLOSED
-```
-
----
-
-### First Response
-
-Only an agent comment can set the first-response timestamp.
-
-Once recorded, the value is not overwritten.
+Unexpected infrastructure errors are masked rather than exposing Prisma, PostgreSQL, filesystem, or internal server details.
 
 ---
 
@@ -1176,117 +1065,98 @@ Once recorded, the value is not overwritten.
 The project includes:
 
 - Argon2id password hashing
-- JWT expiration
-- environment-based JWT secrets
-- explicit JWT algorithm restriction
-- backend authorization
-- ticket ownership checks
-- safe GraphQL errors
-- masked unexpected errors
-- no password hashes exposed through GraphQL
+- expiring JWT access tokens
+- environment-based JWT secret
+- explicit backend authorization
+- reporter ownership checks
+- agent-role validation for assignment
+- no password hashes returned by GraphQL
 - `.env` files excluded from Git
+- strict TypeScript
+- no explicit `any` through lint rules
 
-The frontend stores the bearer token in `sessionStorage` for the scope of this take-home application.
+The frontend uses `sessionStorage` for the bearer token for the scope of this take-home.
 
-For a larger production application, an HttpOnly, Secure, SameSite cookie-based authentication strategy would be considered to reduce JavaScript access to authentication tokens.
+For a larger production application, HttpOnly + Secure + SameSite cookies would be considered to reduce JavaScript access to authentication credentials.
 
 ---
 
-# Tradeoffs and Assumptions
+# Important Design Decisions and Tradeoffs
+
+## `USER` Represents the Reporter
+
+The specification describes reporters and agents. This implementation keeps the original `USER` enum value and treats it as the reporter/customer role rather than performing a late risky database enum rename.
+
+---
+
+## SLA Values Are Backend-Driven
+
+The frontend receives SLA deadlines, states, and remaining business minutes from GraphQL.
+
+It formats these values for display but does not reproduce business-calendar calculations.
+
+---
+
+## Dynamic Holiday-Aware SLA Calculation
+
+The dual SLA API is calculated from ticket timestamps plus the current configured holiday calendar.
+
+The legacy `slaDeadline` column stores the resolution due time calculated when the ticket is created for compatibility.
+
+This means changing the holiday calendar later can change dynamically returned dual-SLA due times for an existing ticket, while the legacy persisted deadline remains the originally calculated resolution deadline.
+
+A production system that requires immutable historical SLA policy snapshots would persist the applied calendar/policy version or both canonical due timestamps at ticket creation.
+
+---
+
+## Cursor Pagination
+
+The canonical `tickets` API uses cursor pagination because the full assignment explicitly requires it.
+
+A compatibility `ticketPage` query is retained temporarily to reduce migration risk.
+
+---
+
+## Frontend Sorting
+
+Frontend sorting currently applies to the fetched cursor page rather than globally across all tickets.
+
+For a larger dataset, sorting would move to the backend so pagination and ordering share one canonical query strategy.
+
+---
 
 ## Simple Architecture
 
-The application deliberately avoids unnecessary architectural layers.
+No repository layer is added between services and Prisma because it would duplicate Prisma's responsibility without adding meaningful value at this scale.
 
-There is no repository layer because Prisma already acts as a strong database abstraction for the current scope.
-
----
-
-## GraphQL Client
-
-The frontend uses native `fetch` through a small typed GraphQL helper rather than Apollo Client.
-
-This keeps the frontend lightweight while still supporting the GraphQL requirements.
-
-A more complex application requiring normalized caching or sophisticated client-side GraphQL state could justify Apollo or another GraphQL client.
+No Redux/Zustand/Apollo Client is added because the current application does not require complex global state or normalized client caching.
 
 ---
 
-## State Management
+# How I'd Extend This
 
-React's built-in state is sufficient for this application.
+With more time, I would add:
 
-Redux or another global state-management library was intentionally not added.
-
----
-
-## Pagination
-
-The API uses offset pagination because the assignment does not require cursor pagination and the expected dataset is appropriate for the simpler implementation.
-
-For very large or frequently changing ticket datasets, cursor-based pagination could be considered.
-
----
-
-## Timezone
-
-Business hours are interpreted in UTC.
-
-A production support organization would likely configure business hours using the organization's operating timezone.
+1. Persisted immutable SLA policy/calendar snapshots per ticket.
+2. Backend global sorting integrated with cursor pagination.
+3. SLA pause states such as `WAITING_ON_CUSTOMER`.
+4. Per-team business calendars and recurring holidays.
+5. Escalation and notification rules.
+6. Assignment/status audit history.
+7. Administrative agent invitation and user management.
+8. Search by ticket title/content.
+9. HttpOnly-cookie authentication.
+10. End-to-end browser tests.
+11. CI for lint, typecheck, unit tests, integration tests, and frontend build.
+12. Production observability and structured logging.
+13. Rate limiting and abuse controls.
+14. Agent performance and SLA reporting.
 
 ---
 
-## Holidays
+# Design Goal
 
-Weekends are skipped but public holidays are not currently modeled.
-
-A production SLA calendar would normally support configured holidays and regional schedules.
-
----
-
-## SLA State After Agent Response
-
-The application tracks `firstResponseAt` independently while SLA state is calculated from the current time and persisted SLA deadline.
-
-If the product definition required first-response SLA to stop permanently when an agent first responds, the SLA model could be extended to preserve the final outcome at first response.
-
----
-
-## Agent Provisioning
-
-Public registration creates customers only.
-
-Agent accounts are promoted separately for this assignment.
-
-A production system would normally provide an administrative user-management or invitation workflow.
-
----
-
-# Improvements With More Time
-
-Given more development time, I would consider:
-
-1. Customer self-service registration screen using the existing `register` mutation.
-2. Administrative agent invitation and user-management workflow.
-3. Configurable business hours and timezones.
-4. Holiday-aware SLA calendars.
-5. Persistent SLA outcome when first response occurs.
-6. Cursor pagination for very large ticket datasets.
-7. Search by ticket title/content.
-8. Richer agent assignment controls.
-9. Audit history for assignment and status changes.
-10. HttpOnly cookie-based authentication.
-11. More service-level integration tests.
-12. End-to-end browser tests.
-13. Accessibility auditing using automated and manual tools.
-14. CI pipeline for type checking, tests, and frontend builds.
-15. Production deployment configuration and observability.
-
----
-
-# Design Decisions
-
-The project prioritizes:
+The implementation prioritizes:
 
 ```text
 clarity
@@ -1300,10 +1170,10 @@ meaningful UX
 
 over unnecessary framework or architecture complexity.
 
-The goal was to build something that is easy to run, review, understand, and extend.
+The goal is to make the application straightforward to run, review, understand, and extend.
 
 ---
 
 # License
 
-This project was created as a technical take-home assignment.
+Created as a technical take-home assignment.

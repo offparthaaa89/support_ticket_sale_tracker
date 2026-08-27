@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useMemo,
     useState,
   } from "react";
   
@@ -14,6 +15,8 @@ import {
   } from "../api/graphql";
   
   import {
+    AGENTS_QUERY,
+    DASHBOARD_QUERY,
     TICKETS_QUERY,
   } from "../api/operations";
   
@@ -25,7 +28,11 @@ import {
   
   import type {
     AppUser,
-    TicketPage,
+    SlaState,
+    TicketConnection,
+    TicketDashboard,
+    TicketFilter,
+    TicketListItem,
     TicketPriority,
     TicketStatus,
   } from "../types";
@@ -35,18 +42,21 @@ import {
   } from "../utils/format";
   
   interface TicketsResponse {
-    tickets: TicketPage;
+    tickets: TicketConnection;
   }
   
   interface TicketsVariables {
-    filter: {
-      status?: TicketStatus;
-      priority?: TicketPriority;
-      assignedAgentId?: string;
-    };
+    filter: TicketFilter;
+    take: number;
+    cursor: string | null;
+  }
   
-    page: number;
-    limit: number;
+  interface DashboardResponse {
+    dashboard: TicketDashboard;
+  }
+  
+  interface AgentsResponse {
+    users: AppUser[];
   }
   
   interface DashboardPageProps {
@@ -55,7 +65,52 @@ import {
     onSessionExpired: () => void;
   }
   
+  type SortOption =
+    | "NEWEST"
+    | "OLDEST"
+    | "PRIORITY"
+    | "SLA";
+  
   const PAGE_SIZE = 6;
+  
+  const priorityRank:
+    Record<TicketPriority, number> = {
+      URGENT: 4,
+      HIGH: 3,
+      MEDIUM: 2,
+      LOW: 1,
+    };
+  
+  const slaRank:
+    Record<SlaState, number> = {
+      BREACHED: 3,
+      AT_RISK: 2,
+      ON_TRACK: 1,
+    };
+  
+  function formatRemainingMinutes(
+    minutes: number,
+  ): string {
+    if (minutes <= 0) {
+      return "No active time remaining";
+    }
+  
+    const hours =
+      Math.floor(minutes / 60);
+  
+    const remainingMinutes =
+      minutes % 60;
+  
+    if (hours === 0) {
+      return `${remainingMinutes}m remaining`;
+    }
+  
+    if (remainingMinutes === 0) {
+      return `${hours}h remaining`;
+    }
+  
+    return `${hours}h ${remainingMinutes}m remaining`;
+  }
   
   export default function DashboardPage({
     accessToken,
@@ -77,69 +132,65 @@ import {
     >("");
   
     const [
-      assignmentFilter,
-      setAssignmentFilter,
-    ] = useState<"ALL" | "MINE">(
-      "ALL",
+      slaFilter,
+      setSlaFilter,
+    ] = useState<SlaState | "">(
+      "",
     );
   
-    const [page, setPage] =
-      useState(1);
+    const [
+      assignmentFilter,
+      setAssignmentFilter,
+    ] = useState("ALL");
+  
+    const [
+      sortOption,
+      setSortOption,
+    ] = useState<SortOption>(
+      "NEWEST",
+    );
+  
+    const [
+      cursorStack,
+      setCursorStack,
+    ] = useState<
+      Array<string | null>
+    >([null]);
   
     const [data, setData] =
-      useState<TicketPage | null>(
+      useState<TicketConnection | null>(
         null,
       );
+  
+    const [
+      dashboard,
+      setDashboard,
+    ] = useState<TicketDashboard | null>(
+      null,
+    );
+  
+    const [agents, setAgents] =
+      useState<AppUser[]>([]);
   
     const [loading, setLoading] =
       useState(true);
   
+    const [
+      dashboardLoading,
+      setDashboardLoading,
+    ] = useState(true);
+  
     const [error, setError] =
       useState<string | null>(null);
   
-    const loadTickets =
-      useCallback(async () => {
-        setLoading(true);
-        setError(null);
+    const currentCursor =
+      cursorStack[
+        cursorStack.length - 1
+      ] ?? null;
   
-        const filter: TicketsVariables["filter"] =
-          {};
-  
-        if (statusFilter) {
-          filter.status =
-            statusFilter;
-        }
-  
-        if (priorityFilter) {
-          filter.priority =
-            priorityFilter;
-        }
-  
-        if (
-          user.role === "AGENT" &&
-          assignmentFilter === "MINE"
-        ) {
-          filter.assignedAgentId =
-            user.id;
-        }
-  
-        try {
-          const response =
-            await graphqlRequest<
-              TicketsResponse,
-              TicketsVariables
-            >(
-              TICKETS_QUERY,
-              {
-                filter,
-                page,
-                limit: PAGE_SIZE,
-              },
-              accessToken,
-            );
-  
-          setData(response.tickets);
-        } catch (caughtError: unknown) {
+    const handleApiError =
+      useCallback(
+        (caughtError: unknown) => {
           if (
             caughtError instanceof
               GraphQLRequestError &&
@@ -153,7 +204,129 @@ import {
           setError(
             caughtError instanceof Error
               ? caughtError.message
-              : "Unable to load tickets",
+              : "Unable to load support data",
+          );
+        },
+        [onSessionExpired],
+      );
+  
+    const loadDashboard =
+      useCallback(async () => {
+        setDashboardLoading(true);
+  
+        try {
+          const response =
+            await graphqlRequest<
+              DashboardResponse
+            >(
+              DASHBOARD_QUERY,
+              undefined,
+              accessToken,
+            );
+  
+          setDashboard(
+            response.dashboard,
+          );
+        } catch (
+          caughtError: unknown
+        ) {
+          handleApiError(
+            caughtError,
+          );
+        } finally {
+          setDashboardLoading(false);
+        }
+      }, [
+        accessToken,
+        handleApiError,
+      ]);
+  
+    const loadAgents =
+      useCallback(async () => {
+        if (user.role !== "AGENT") {
+          setAgents([]);
+          return;
+        }
+  
+        try {
+          const response =
+            await graphqlRequest<
+              AgentsResponse
+            >(
+              AGENTS_QUERY,
+              undefined,
+              accessToken,
+            );
+  
+          setAgents(response.users);
+        } catch (
+          caughtError: unknown
+        ) {
+          handleApiError(
+            caughtError,
+          );
+        }
+      }, [
+        accessToken,
+        handleApiError,
+        user.role,
+      ]);
+  
+    const loadTickets =
+      useCallback(async () => {
+        setLoading(true);
+        setError(null);
+  
+        const filter:
+          TicketFilter = {};
+  
+        if (statusFilter) {
+          filter.status =
+            statusFilter;
+        }
+  
+        if (priorityFilter) {
+          filter.priority =
+            priorityFilter;
+        }
+  
+        if (slaFilter) {
+          filter.slaState =
+            slaFilter;
+        }
+  
+        if (
+          user.role === "AGENT" &&
+          assignmentFilter !== "ALL"
+        ) {
+          filter.assignedAgentId =
+            assignmentFilter === "MINE"
+              ? user.id
+              : assignmentFilter;
+        }
+  
+        try {
+          const response =
+            await graphqlRequest<
+              TicketsResponse,
+              TicketsVariables
+            >(
+              TICKETS_QUERY,
+              {
+                filter,
+                take: PAGE_SIZE,
+                cursor:
+                  currentCursor,
+              },
+              accessToken,
+            );
+  
+          setData(response.tickets);
+        } catch (
+          caughtError: unknown
+        ) {
+          handleApiError(
+            caughtError,
           );
         } finally {
           setLoading(false);
@@ -161,27 +334,105 @@ import {
       }, [
         accessToken,
         assignmentFilter,
-        onSessionExpired,
-        page,
+        currentCursor,
+        handleApiError,
         priorityFilter,
+        slaFilter,
         statusFilter,
         user.id,
         user.role,
       ]);
   
     useEffect(() => {
+      void loadDashboard();
+    }, [loadDashboard]);
+  
+    useEffect(() => {
+      void loadAgents();
+    }, [loadAgents]);
+  
+    useEffect(() => {
       void loadTickets();
     }, [loadTickets]);
   
-    function resetToFirstPage() {
-      setPage(1);
+    function resetPagination() {
+      setCursorStack([null]);
     }
+  
+    const sortedTickets =
+      useMemo(() => {
+        if (!data) {
+          return [];
+        }
+  
+        const items:
+          TicketListItem[] = [
+            ...data.nodes,
+          ];
+  
+        items.sort(
+          (left, right) => {
+            switch (sortOption) {
+              case "OLDEST":
+                return (
+                  new Date(
+                    left.createdAt,
+                  ).getTime() -
+                  new Date(
+                    right.createdAt,
+                  ).getTime()
+                );
+  
+              case "PRIORITY":
+                return (
+                  priorityRank[
+                    right.priority
+                  ] -
+                  priorityRank[
+                    left.priority
+                  ]
+                );
+  
+              case "SLA":
+                return (
+                  slaRank[
+                    right.sla
+                      .overallState
+                  ] -
+                  slaRank[
+                    left.sla
+                      .overallState
+                  ]
+                );
+  
+              case "NEWEST":
+                return (
+                  new Date(
+                    right.createdAt,
+                  ).getTime() -
+                  new Date(
+                    left.createdAt,
+                  ).getTime()
+                );
+            }
+          },
+        );
+  
+        return items;
+      }, [
+        data,
+        sortOption,
+      ]);
   
     const hasFilters =
       Boolean(statusFilter) ||
       Boolean(priorityFilter) ||
+      Boolean(slaFilter) ||
       (user.role === "AGENT" &&
         assignmentFilter !== "ALL");
+  
+    const pageNumber =
+      cursorStack.length;
   
     return (
       <section className="page-section">
@@ -201,8 +452,8 @@ import {
   
             <p className="page-description">
               {user.role === "AGENT"
-                ? "Scan SLA health, ownership and status without digging through unnecessary detail."
-                : "Track every issue, response and deadline from one place."}
+                ? "Monitor ownership, SLA health and ticket progress from one queue."
+                : "Track every issue, response and SLA from one place."}
             </p>
           </div>
   
@@ -216,6 +467,70 @@ import {
           )}
         </div>
   
+        <div className="dashboard-stats">
+          <article className="content-card">
+            <span className="eyebrow">
+              Open
+            </span>
+            <h2>
+              {dashboardLoading
+                ? "…"
+                : dashboard
+                  ?.openTickets ?? 0}
+            </h2>
+            <p className="muted">
+              Awaiting progress
+            </p>
+          </article>
+  
+          <article className="content-card">
+            <span className="eyebrow">
+              In progress
+            </span>
+            <h2>
+              {dashboardLoading
+                ? "…"
+                : dashboard
+                  ?.inProgressTickets ??
+                  0}
+            </h2>
+            <p className="muted">
+              Being worked
+            </p>
+          </article>
+  
+          <article className="content-card">
+            <span className="eyebrow">
+              At risk
+            </span>
+            <h2>
+              {dashboardLoading
+                ? "…"
+                : dashboard
+                  ?.atRiskTickets ?? 0}
+            </h2>
+            <p className="muted">
+              Over 75% SLA consumed
+            </p>
+          </article>
+  
+          <article className="content-card">
+            <span className="eyebrow">
+              Breached
+            </span>
+            <h2>
+              {dashboardLoading
+                ? "…"
+                : dashboard
+                  ?.breachedTickets ??
+                  0}
+            </h2>
+            <p className="muted">
+              SLA deadline passed
+            </p>
+          </article>
+        </div>
+  
         <div className="filter-panel">
           <div className="filter-panel__intro">
             <strong>
@@ -223,21 +538,13 @@ import {
             </strong>
   
             <span>
-              {data
-                ? `${data.total} result${
-                    data.total === 1
-                      ? ""
-                      : "s"
-                  }`
-                : "Loading results"}
+              Page {pageNumber}
             </span>
           </div>
   
           <div className="filter-controls">
             <label>
-              <span>
-                Status
-              </span>
+              <span>Status</span>
   
               <select
                 value={statusFilter}
@@ -249,25 +556,21 @@ import {
                       | "",
                   );
   
-                  resetToFirstPage();
+                  resetPagination();
                 }}
               >
                 <option value="">
                   All statuses
                 </option>
-  
                 <option value="OPEN">
                   Open
                 </option>
-  
                 <option value="IN_PROGRESS">
                   In progress
                 </option>
-  
                 <option value="RESOLVED">
                   Resolved
                 </option>
-  
                 <option value="CLOSED">
                   Closed
                 </option>
@@ -275,9 +578,7 @@ import {
             </label>
   
             <label>
-              <span>
-                Priority
-              </span>
+              <span>Priority</span>
   
               <select
                 value={priorityFilter}
@@ -289,27 +590,54 @@ import {
                       | "",
                   );
   
-                  resetToFirstPage();
+                  resetPagination();
                 }}
               >
                 <option value="">
                   All priorities
                 </option>
-  
                 <option value="URGENT">
                   Urgent
                 </option>
-  
                 <option value="HIGH">
                   High
                 </option>
-  
                 <option value="MEDIUM">
                   Medium
                 </option>
-  
                 <option value="LOW">
                   Low
+                </option>
+              </select>
+            </label>
+  
+            <label>
+              <span>SLA</span>
+  
+              <select
+                value={slaFilter}
+                onChange={(event) => {
+                  setSlaFilter(
+                    event.target
+                      .value as
+                      | SlaState
+                      | "",
+                  );
+  
+                  resetPagination();
+                }}
+              >
+                <option value="">
+                  All SLA states
+                </option>
+                <option value="ON_TRACK">
+                  On track
+                </option>
+                <option value="AT_RISK">
+                  At risk
+                </option>
+                <option value="BREACHED">
+                  Breached
                 </option>
               </select>
             </label>
@@ -317,7 +645,7 @@ import {
             {user.role === "AGENT" && (
               <label>
                 <span>
-                  Assignment
+                  Assignee
                 </span>
   
                 <select
@@ -326,25 +654,61 @@ import {
                   }
                   onChange={(event) => {
                     setAssignmentFilter(
-                      event.target
-                        .value as
-                        | "ALL"
-                        | "MINE",
+                      event.target.value,
                     );
   
-                    resetToFirstPage();
+                    resetPagination();
                   }}
                 >
                   <option value="ALL">
-                    All tickets
+                    All agents
                   </option>
   
                   <option value="MINE">
                     Assigned to me
                   </option>
+  
+                  {agents.map(
+                    (agent) => (
+                      <option
+                        key={agent.id}
+                        value={agent.id}
+                      >
+                        {agent.name}
+                      </option>
+                    ),
+                  )}
                 </select>
               </label>
             )}
+  
+            <label>
+              <span>Sort</span>
+  
+              <select
+                value={sortOption}
+                onChange={(event) => {
+                  setSortOption(
+                    event.target
+                      .value as
+                      SortOption,
+                  );
+                }}
+              >
+                <option value="NEWEST">
+                  Newest first
+                </option>
+                <option value="OLDEST">
+                  Oldest first
+                </option>
+                <option value="PRIORITY">
+                  Priority high → low
+                </option>
+                <option value="SLA">
+                  SLA severity
+                </option>
+              </select>
+            </label>
   
             {hasFilters && (
               <button
@@ -353,10 +717,11 @@ import {
                 onClick={() => {
                   setStatusFilter("");
                   setPriorityFilter("");
+                  setSlaFilter("");
                   setAssignmentFilter(
                     "ALL",
                   );
-                  setPage(1);
+                  resetPagination();
                 }}
               >
                 Clear filters
@@ -370,14 +735,13 @@ import {
             className="alert alert--error"
             role="alert"
           >
-            <span>
-              {error}
-            </span>
+            <span>{error}</span>
   
             <button
               type="button"
               onClick={() => {
                 void loadTickets();
+                void loadDashboard();
               }}
             >
               Try again
@@ -404,7 +768,8 @@ import {
   
         {data && (
           <>
-            {data.items.length === 0 ? (
+            {sortedTickets.length ===
+            0 ? (
               <div className="empty-state">
                 <div className="empty-state__icon">
                   ✓
@@ -444,11 +809,11 @@ import {
                 }`}
                 aria-busy={loading}
               >
-                {data.items.map(
+                {sortedTickets.map(
                   (ticket) => (
                     <Link
                       to={`/tickets/${ticket.id}`}
-                      className={`ticket-card ticket-card--sla-${ticket.slaState
+                      className={`ticket-card ticket-card--sla-${ticket.sla.overallState
                         .toLowerCase()
                         .replace(
                           "_",
@@ -473,7 +838,8 @@ import {
   
                         <SlaBadge
                           state={
-                            ticket.slaState
+                            ticket.sla
+                              .overallState
                           }
                         />
                       </div>
@@ -499,12 +865,13 @@ import {
   
                           <div>
                             <span>
-                              SLA deadline
+                              Resolution SLA
                             </span>
   
                             <strong>
-                              {formatDateTime(
-                                ticket.slaDeadline,
+                              {formatRemainingMinutes(
+                                ticket.sla
+                                  .resolutionRemainingMinutes,
                               )}
                             </strong>
                           </div>
@@ -513,9 +880,10 @@ import {
   
                       <div className="ticket-card__footer">
                         <span>
-                          Created{" "}
+                          Due{" "}
                           {formatDateTime(
-                            ticket.createdAt,
+                            ticket.sla
+                              .resolutionDueAt,
                           )}
                         </span>
   
@@ -529,24 +897,28 @@ import {
               </div>
             )}
   
-            {data.totalPages > 1 && (
+            {(cursorStack.length >
+              1 ||
+              data.pageInfo
+                .hasNextPage) && (
               <div className="pagination">
                 <button
                   type="button"
                   className="secondary-button"
                   disabled={
-                    data.page <= 1 ||
+                    cursorStack.length <=
+                      1 ||
                     loading
                   }
-                  onClick={() =>
-                    setPage(
+                  onClick={() => {
+                    setCursorStack(
                       (current) =>
-                        Math.max(
-                          1,
-                          current - 1,
+                        current.slice(
+                          0,
+                          -1,
                         ),
-                    )
-                  }
+                    );
+                  }}
                 >
                   ← Previous
                 </button>
@@ -554,11 +926,7 @@ import {
                 <span>
                   Page{" "}
                   <strong>
-                    {data.page}
-                  </strong>{" "}
-                  of{" "}
-                  <strong>
-                    {data.totalPages}
+                    {pageNumber}
                   </strong>
                 </span>
   
@@ -566,16 +934,28 @@ import {
                   type="button"
                   className="secondary-button"
                   disabled={
-                    data.page >=
-                      data.totalPages ||
+                    !data.pageInfo
+                      .hasNextPage ||
+                    !data.pageInfo
+                      .endCursor ||
                     loading
                   }
-                  onClick={() =>
-                    setPage(
-                      (current) =>
-                        current + 1,
-                    )
-                  }
+                  onClick={() => {
+                    const endCursor =
+                      data.pageInfo
+                        .endCursor;
+  
+                    if (!endCursor) {
+                      return;
+                    }
+  
+                    setCursorStack(
+                      (current) => [
+                        ...current,
+                        endCursor,
+                      ],
+                    );
+                  }}
                 >
                   Next →
                 </button>

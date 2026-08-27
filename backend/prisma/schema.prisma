@@ -58,7 +58,13 @@ model Ticket {
   assignedAgent   User?   @relation("TicketAssignee", fields: [assignedAgentId], references: [id], onDelete: SetNull)
 
   firstResponseAt DateTime? @db.Timestamptz(3)
-  slaDeadline     DateTime  @db.Timestamptz(3)
+
+  resolvedAt DateTime? @db.Timestamptz(3)
+
+  // Temporary legacy field.
+  // This will be replaced by the dual-SLA implementation
+  // in the next correction stage.
+  slaDeadline DateTime @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -86,4 +92,12 @@ model Comment {
 
   @@index([ticketId, createdAt])
   @@index([authorId])
+}
+
+model Holiday {
+  id   String   @id @default(uuid()) @db.Uuid
+  date DateTime @unique @db.Date
+  name String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
 }

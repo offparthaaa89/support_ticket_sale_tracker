@@ -17,10 +17,14 @@ import type {
 import { prisma } from "../lib/prisma";
 
 import {
-  calculateSlaDeadline,
-  getSlaState,
-  type SlaState,
+  calculateTicketSLADueTimes,
+  getTicketSLAInfo,
+  type SLAState,
 } from "./sla.service";
+
+import {
+  getHolidayDates,
+} from "./holiday.service";
 
 export interface CreateTicketInput {
   title: string;
@@ -42,12 +46,19 @@ export interface TicketFilterInput {
   status?: TicketStatus | null;
   priority?: TicketPriority | null;
   assignedAgentId?: string | null;
+  slaState?: SLAState | null;
 }
 
 export interface ListTicketsInput {
   filter?: TicketFilterInput | null;
   page?: number | null;
   limit?: number | null;
+}
+
+export interface ListTicketsCursorInput {
+  filter?: TicketFilterInput | null;
+  take?: number | null;
+  cursor?: string | null;
 }
 
 type CommentWithAuthor = Comment & {
@@ -76,7 +87,17 @@ interface CommentView {
   createdAt: string;
 }
 
-interface TicketView {
+interface TicketSLAView {
+  firstResponseDueAt: string;
+  resolutionDueAt: string;
+  firstResponseState: SLAState;
+  resolutionState: SLAState;
+  overallState: SLAState;
+  firstResponseRemainingMinutes: number;
+  resolutionRemainingMinutes: number;
+}
+
+export interface TicketView {
   id: string;
   title: string;
   description: string;
@@ -85,8 +106,16 @@ interface TicketView {
   creator: UserView;
   assignedAgent: UserView | null;
   firstResponseAt: string | null;
+  resolvedAt: string | null;
+  sla: TicketSLAView;
+
+  /*
+   * Temporary compatibility fields.
+   * Existing frontend still uses these.
+   */
   slaDeadline: string;
-  slaState: SlaState;
+  slaState: SLAState;
+
   createdAt: string;
   updatedAt: string;
   comments: CommentView[];
@@ -163,8 +192,21 @@ function toUserView(
 
 function toTicketView(
   ticket: TicketWithRelations,
+  holidays: readonly Date[],
   now: Date = new Date(),
 ): TicketView {
+  const sla =
+    getTicketSLAInfo({
+      createdAt: ticket.createdAt,
+      priority: ticket.priority,
+      firstResponseAt:
+        ticket.firstResponseAt,
+      resolvedAt:
+        ticket.resolvedAt,
+      holidays,
+      now,
+    });
+
   return {
     id: ticket.id,
     title: ticket.title,
@@ -183,17 +225,49 @@ function toTicketView(
         : null,
 
     firstResponseAt:
-      ticket.firstResponseAt?.toISOString() ??
+      ticket.firstResponseAt
+        ?.toISOString() ??
       null,
 
-    slaDeadline:
-      ticket.slaDeadline.toISOString(),
+    resolvedAt:
+      ticket.resolvedAt
+        ?.toISOString() ??
+      null,
 
-    slaState: getSlaState(
-      ticket.slaDeadline,
-      ticket.priority,
-      now,
-    ),
+    sla: {
+      firstResponseDueAt:
+        sla.firstResponseDueAt
+          .toISOString(),
+
+      resolutionDueAt:
+        sla.resolutionDueAt
+          .toISOString(),
+
+      firstResponseState:
+        sla.firstResponseState,
+
+      resolutionState:
+        sla.resolutionState,
+
+      overallState:
+        sla.overallState,
+
+      firstResponseRemainingMinutes:
+        sla.firstResponseRemainingMinutes,
+
+      resolutionRemainingMinutes:
+        sla.resolutionRemainingMinutes,
+    },
+
+    /*
+     * Legacy frontend compatibility.
+     */
+    slaDeadline:
+      sla.resolutionDueAt
+        .toISOString(),
+
+    slaState:
+      sla.overallState,
 
     createdAt:
       ticket.createdAt.toISOString(),
@@ -213,7 +287,8 @@ function toTicketView(
             ),
 
           createdAt:
-            comment.createdAt.toISOString(),
+            comment.createdAt
+              .toISOString(),
         }),
       ),
   };
@@ -265,12 +340,19 @@ export async function createTicket(
   const validated =
     validateCreateTicketInput(input);
 
-  const createdAt = new Date();
+  const createdAt =
+    new Date();
 
-  const slaDeadline =
-    calculateSlaDeadline(
+  const holidays =
+    await getHolidayDates();
+
+  const {
+    resolutionDueAt,
+  } =
+    calculateTicketSLADueTimes(
       createdAt,
       validated.priority,
+      holidays,
     );
 
   const ticket =
@@ -286,7 +368,9 @@ export async function createTicket(
           actor.id,
 
         createdAt,
-        slaDeadline,
+
+        slaDeadline:
+          resolutionDueAt,
       },
 
       include: {
@@ -305,7 +389,10 @@ export async function createTicket(
       },
     });
 
-  return toTicketView(ticket);
+  return toTicketView(
+    ticket,
+    holidays,
+  );
 }
 
 export async function getTicket(
@@ -317,8 +404,11 @@ export async function getTicket(
     "ticketId",
   );
 
-  const ticket =
-    await prisma.ticket.findUnique({
+  const [
+    ticket,
+    holidays,
+  ] = await Promise.all([
+    prisma.ticket.findUnique({
       where: {
         id: ticketId,
       },
@@ -337,7 +427,10 @@ export async function getTicket(
           },
         },
       },
-    });
+    }),
+
+    getHolidayDates(),
+  ]);
 
   if (!ticket) {
     notFound("Ticket not found");
@@ -352,10 +445,13 @@ export async function getTicket(
     );
   }
 
-  return toTicketView(ticket);
+  return toTicketView(
+    ticket,
+    holidays,
+  );
 }
 
-export async function listTickets(
+export async function listTicketPage(
   actor: AuthenticatedUser,
   input: ListTicketsInput,
 ) {
@@ -433,8 +529,11 @@ export async function listTickets(
   const skip =
     (page - 1) * limit;
 
-  const [tickets, total] =
-    await Promise.all([
+  const [
+    tickets,
+    total,
+    holidays,
+  ] = await Promise.all([
       prisma.ticket.findMany({
         where,
 
@@ -469,6 +568,8 @@ export async function listTickets(
       prisma.ticket.count({
         where,
       }),
+
+      getHolidayDates(),
     ]);
 
   const now = new Date();
@@ -478,6 +579,7 @@ export async function listTickets(
       (ticket) =>
         toTicketView(
           ticket,
+          holidays,
           now,
         ),
     ),
@@ -511,6 +613,7 @@ export async function assignTicket(
   const [
     ticket,
     targetAgent,
+    holidays,
   ] = await Promise.all([
     prisma.ticket.findUnique({
       where: {
@@ -538,6 +641,8 @@ export async function assignTicket(
         id: input.agentId,
       },
     }),
+
+    getHolidayDates(),
   ]);
 
   if (!ticket) {
@@ -562,7 +667,10 @@ export async function assignTicket(
     ticket.assignedAgentId ===
     targetAgent.id
   ) {
-    return toTicketView(ticket);
+    return toTicketView(
+      ticket,
+      holidays,
+    );
   }
 
   const updatedTicket =
@@ -594,6 +702,7 @@ export async function assignTicket(
 
   return toTicketView(
     updatedTicket,
+    holidays,
   );
 }
 
@@ -605,8 +714,11 @@ export async function updateTicketStatus(
     "ticketId",
   );
 
-  const ticket =
-    await prisma.ticket.findUnique({
+  const [
+    ticket,
+    holidays,
+  ] = await Promise.all([
+    prisma.ticket.findUnique({
       where: {
         id: input.ticketId,
       },
@@ -625,7 +737,10 @@ export async function updateTicketStatus(
           },
         },
       },
-    });
+    }),
+
+    getHolidayDates(),
+  ]);
 
   if (!ticket) {
     notFound("Ticket not found");
@@ -658,6 +773,13 @@ export async function updateTicketStatus(
 
       data: {
         status: input.status,
+
+        ...(input.status === "RESOLVED"
+          ? {
+              resolvedAt:
+                new Date(),
+            }
+          : {}),
       },
 
       include: {
@@ -678,5 +800,243 @@ export async function updateTicketStatus(
 
   return toTicketView(
     updatedTicket,
+    holidays,
   );
+}
+
+export async function resolveTicket(
+  ticketId: string,
+): Promise<TicketView> {
+  return updateTicketStatus({
+    ticketId,
+    status: "RESOLVED",
+  });
+}
+
+export async function listTicketsCursor(
+  actor: AuthenticatedUser,
+  input: ListTicketsCursorInput,
+) {
+  const take =
+    input.take ?? 10;
+
+  if (
+    !Number.isInteger(take) ||
+    take < 1 ||
+    take > 100
+  ) {
+    validationError(
+      "Take must be an integer between 1 and 100",
+    );
+  }
+
+  const cursor =
+    input.cursor?.trim() ||
+    undefined;
+
+  if (cursor) {
+    assertUuid(
+      cursor,
+      "cursor",
+    );
+  }
+
+  const filter =
+    input.filter ??
+    undefined;
+
+  const assignedAgentId =
+    filter?.assignedAgentId ??
+    undefined;
+
+  if (assignedAgentId) {
+    assertUuid(
+      assignedAgentId,
+      "assignedAgentId",
+    );
+  }
+
+  const where = {
+    ...(actor.role === "USER"
+      ? {
+          creatorId:
+            actor.id,
+        }
+      : {}),
+
+    ...(filter?.status
+      ? {
+          status:
+            filter.status,
+        }
+      : {}),
+
+    ...(filter?.priority
+      ? {
+          priority:
+            filter.priority,
+        }
+      : {}),
+
+    ...(assignedAgentId
+      ? {
+          assignedAgentId,
+        }
+      : {}),
+  };
+
+  const holidays =
+    await getHolidayDates();
+
+  const now =
+    new Date();
+
+  const desiredSLAState =
+    filter?.slaState ??
+    undefined;
+
+  const batchSize =
+    Math.min(
+      100,
+      Math.max(
+        take * 2,
+        20,
+      ),
+    );
+
+  const matchingTickets:
+    TicketView[] = [];
+
+  let scanCursor =
+    cursor;
+
+  let reachedEnd =
+    false;
+
+  while (
+    matchingTickets.length <
+      take + 1 &&
+    !reachedEnd
+  ) {
+    const tickets =
+      await prisma.ticket.findMany({
+        where,
+
+        take: batchSize,
+
+        ...(scanCursor
+          ? {
+              cursor: {
+                id: scanCursor,
+              },
+
+              skip: 1,
+            }
+          : {}),
+
+        orderBy: [
+          {
+            createdAt:
+              "desc",
+          },
+          {
+            id:
+              "desc",
+          },
+        ],
+
+        include: {
+          creator: true,
+          assignedAgent: true,
+
+          comments: {
+            include: {
+              author: true,
+            },
+
+            orderBy: {
+              createdAt:
+                "asc",
+            },
+          },
+        },
+      });
+
+    if (tickets.length === 0) {
+      reachedEnd = true;
+      break;
+    }
+
+    for (const ticket of tickets) {
+      const ticketView =
+        toTicketView(
+          ticket,
+          holidays,
+          now,
+        );
+
+      if (
+        !desiredSLAState ||
+        ticketView
+          .sla
+          .overallState ===
+          desiredSLAState
+      ) {
+        matchingTickets.push(
+          ticketView,
+        );
+      }
+
+      if (
+        matchingTickets.length >=
+        take + 1
+      ) {
+        break;
+      }
+    }
+
+    if (
+      tickets.length <
+      batchSize
+    ) {
+      reachedEnd = true;
+    }
+
+    const lastScannedTicket =
+      tickets[
+        tickets.length - 1
+      ];
+
+    if (lastScannedTicket) {
+      scanCursor =
+        lastScannedTicket.id;
+    }
+  }
+
+  const hasNextPage =
+    matchingTickets.length >
+    take;
+
+  const nodes =
+    matchingTickets.slice(
+      0,
+      take,
+    );
+
+  const lastNode =
+    nodes[
+      nodes.length - 1
+    ];
+
+  return {
+    nodes,
+
+    pageInfo: {
+      hasNextPage,
+
+      endCursor:
+        lastNode?.id ??
+        null,
+    },
+  };
 }

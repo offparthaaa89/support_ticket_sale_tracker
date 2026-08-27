@@ -1,4 +1,5 @@
 import {
+    requireAgent,
     requireAuthenticatedUser,
   } from "../../auth/authorization";
   
@@ -6,15 +7,32 @@ import {
     GraphQLContext,
   } from "../../auth/context";
   
+  import type {
+    Role,
+  } from "../../generated/prisma/client";
+  
   import {
     getCurrentUser,
   } from "../../services/auth.service";
   
   import {
+    getTicketDashboard,
+  } from "../../services/dashboard.service";
+  
+  import {
+    listHolidays,
+  } from "../../services/holiday.service";
+  
+  import {
     getTicket,
-    listTickets,
+    listTicketPage,
+    listTicketsCursor,
     type TicketFilterInput,
   } from "../../services/ticket.service";
+  
+  import {
+    listUsers,
+  } from "../../services/user.service";
   
   interface TicketArgs {
     id: string;
@@ -22,8 +40,18 @@ import {
   
   interface TicketsArgs {
     filter?: TicketFilterInput | null;
+    take?: number | null;
+    cursor?: string | null;
+  }
+  
+  interface TicketPageArgs {
+    filter?: TicketFilterInput | null;
     page?: number | null;
     limit?: number | null;
+  }
+  
+  interface UsersArgs {
+    role?: Role | null;
   }
   
   export const queryResolvers = {
@@ -36,7 +64,9 @@ import {
         context: GraphQLContext,
       ) => {
         const authenticatedUser =
-          requireAuthenticatedUser(context);
+          requireAuthenticatedUser(
+            context,
+          );
   
         return getCurrentUser(
           authenticatedUser.id,
@@ -49,7 +79,9 @@ import {
         context: GraphQLContext,
       ) => {
         const authenticatedUser =
-          requireAuthenticatedUser(context);
+          requireAuthenticatedUser(
+            context,
+          );
   
         return getTicket(
           authenticatedUser,
@@ -63,9 +95,31 @@ import {
         context: GraphQLContext,
       ) => {
         const authenticatedUser =
-          requireAuthenticatedUser(context);
+          requireAuthenticatedUser(
+            context,
+          );
   
-        return listTickets(
+        return listTicketsCursor(
+          authenticatedUser,
+          {
+            filter: args.filter,
+            take: args.take,
+            cursor: args.cursor,
+          },
+        );
+      },
+  
+      ticketPage: (
+        _parent: unknown,
+        args: TicketPageArgs,
+        context: GraphQLContext,
+      ) => {
+        const authenticatedUser =
+          requireAuthenticatedUser(
+            context,
+          );
+  
+        return listTicketPage(
           authenticatedUser,
           {
             filter: args.filter,
@@ -73,6 +127,47 @@ import {
             limit: args.limit,
           },
         );
+      },
+  
+      dashboard: (
+        _parent: unknown,
+        _args: unknown,
+        context: GraphQLContext,
+      ) => {
+        const authenticatedUser =
+          requireAuthenticatedUser(
+            context,
+          );
+  
+        return getTicketDashboard(
+          authenticatedUser,
+        );
+      },
+  
+      users: (
+        _parent: unknown,
+        args: UsersArgs,
+        context: GraphQLContext,
+      ) => {
+        requireAgent(
+          context,
+        );
+  
+        return listUsers(
+          args.role ?? null,
+        );
+      },
+  
+      holidays: (
+        _parent: unknown,
+        _args: unknown,
+        context: GraphQLContext,
+      ) => {
+        requireAuthenticatedUser(
+          context,
+        );
+  
+        return listHolidays();
       },
     },
   };

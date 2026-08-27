@@ -27,15 +27,15 @@ export const LOGIN_MUTATION = `
 export const TICKETS_QUERY = `
   query Tickets(
     $filter: TicketFilterInput
-    $page: Int!
-    $limit: Int!
+    $take: Int!
+    $cursor: String
   ) {
     tickets(
       filter: $filter
-      page: $page
-      limit: $limit
+      take: $take
+      cursor: $cursor
     ) {
-      items {
+      nodes {
         id
         title
         priority
@@ -50,12 +50,44 @@ export const TICKETS_QUERY = `
           email
           role
         }
+
+        sla {
+          firstResponseDueAt
+          resolutionDueAt
+          firstResponseState
+          resolutionState
+          overallState
+          firstResponseRemainingMinutes
+          resolutionRemainingMinutes
+        }
       }
 
-      page
-      limit
-      total
-      totalPages
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+`;
+
+export const DASHBOARD_QUERY = `
+  query Dashboard {
+    dashboard {
+      openTickets
+      inProgressTickets
+      atRiskTickets
+      breachedTickets
+    }
+  }
+`;
+
+export const AGENTS_QUERY = `
+  query Agents {
+    users(role: AGENT) {
+      id
+      name
+      email
+      role
     }
   }
 `;
@@ -82,6 +114,7 @@ export const TICKET_QUERY = `
       priority
       status
       firstResponseAt
+      resolvedAt
       slaDeadline
       slaState
       createdAt
@@ -99,6 +132,16 @@ export const TICKET_QUERY = `
         name
         email
         role
+      }
+
+      sla {
+        firstResponseDueAt
+        resolutionDueAt
+        firstResponseState
+        resolutionState
+        overallState
+        firstResponseRemainingMinutes
+        resolutionRemainingMinutes
       }
 
       comments {
@@ -146,6 +189,7 @@ export const ASSIGN_TICKET_MUTATION = `
       assignedAgent {
         id
         name
+        email
         role
       }
     }
@@ -156,9 +200,26 @@ export const UPDATE_TICKET_STATUS_MUTATION = `
   mutation UpdateTicketStatus(
     $input: UpdateTicketStatusInput!
   ) {
-    updateTicketStatus(input: $input) {
+    updateTicketStatus: changeTicketStatus(
+      input: $input
+    ) {
       id
       status
+    }
+  }
+`;
+
+export const RESOLVE_TICKET_MUTATION = `
+  mutation ResolveTicket($ticketId: ID!) {
+    resolveTicket(ticketId: $ticketId) {
+      id
+      status
+      resolvedAt
+
+      sla {
+        resolutionState
+        resolutionRemainingMinutes
+      }
     }
   }
 `;
